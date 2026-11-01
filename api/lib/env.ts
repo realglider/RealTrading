@@ -14,7 +14,10 @@ export const env = {
   databaseUrl: required("DATABASE_URL"),
   adminEmail: required("ADMIN_EMAIL").trim().toLowerCase(),
   adminPasswordHash: required("ADMIN_PASSWORD_HASH"),
-  resetEmailApiKey: process.env.RESET_EMAIL_API_KEY ?? "",
-  resetEmailFrom: process.env.RESET_EMAIL_FROM ?? "",
+  smtpHost: process.env.SMTP_HOST ?? "",
+  smtpPort: Number.parseInt(process.env.SMTP_PORT ?? "465", 10),
+  smtpUser: process.env.SMTP_USER ?? "",
+  smtpAppPassword: process.env.SMTP_APP_PASSWORD ?? "",
   publicAppUrl: process.env.PUBLIC_APP_URL ?? "",
 };
+

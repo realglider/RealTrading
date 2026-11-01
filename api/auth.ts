@@ -1,5 +1,6 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import * as cookie from "cookie";
+import nodemailer from "nodemailer";
 import type { Context } from "hono";
 import { setCookie } from "hono/cookie";
 import { Session } from "@contracts/constants";
@@ -13,6 +14,17 @@ const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 const registrationAttempts = new Map<string, { count: number; resetAt: number }>();
 const resetAttempts = new Map<string, { count: number; resetAt: number }>();
 const passwordResetAttempts = new Map<string, { count: number; resetAt: number }>();
+const resetMailer = nodemailer.createTransport({
+  host: env.smtpHost || "smtp.gmail.com",
+  port: env.smtpPort,
+  secure: env.smtpPort === 465,
+  auth: env.smtpUser && env.smtpAppPassword
+    ? { user: env.smtpUser, pass: env.smtpAppPassword.replace(/\s/g, "") }
+    : undefined,
+  connectionTimeout: 10_000,
+  greetingTimeout: 10_000,
+  socketTimeout: 15_000,
+});
 
 function validPassword(password: string) {
   const [scheme, saltHex, expectedHex] = env.adminPasswordHash.split("$");
@@ -157,7 +169,7 @@ export async function forgotPassword(c: Context) {
   if (hitLimit(resetAttempts, ip, 3, 60 * 60_000)) {
     return c.json({ error: "Zu viele Anfragen. Bitte später erneut versuchen." }, 429);
   }
-  if (!env.resetEmailApiKey || !env.resetEmailFrom || !env.publicAppUrl.startsWith("https://")) {
+  if (!env.smtpUser || !env.smtpAppPassword || !env.publicAppUrl.startsWith("https://")) {
     return c.json({ error: "Passwort-Zurücksetzen ist noch nicht eingerichtet. Bitte den Administrator kontaktieren." }, 503);
   }
 
@@ -188,26 +200,15 @@ export async function forgotPassword(c: Context) {
     await savePasswordReset(user.id, tokenHash, expiresAt);
     const link = `${env.publicAppUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
     try {
-      const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${env.resetEmailApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: env.resetEmailFrom,
-          to: [user.email ?? email],
-          subject: "RealTrading Passwort zurücksetzen",
-          text: `Über diesen Link kannst du dein RealTrading-Passwort zurücksetzen. Der Link ist 30 Minuten gültig:\n\n${link}\n\nWenn du das nicht angefordert hast, kannst du diese E-Mail ignorieren.`,
-        }),
+      await resetMailer.sendMail({
+        from: `RealTrading <${env.smtpUser}>`,
+        to: user.email ?? email,
+        subject: "RealTrading Passwort zurücksetzen",
+        text: `Über diesen Link kannst du dein RealTrading-Passwort zurücksetzen. Der Link ist 30 Minuten gültig:\n\n${link}\n\nWenn du das nicht angefordert hast, kannst du diese E-Mail ignorieren.`,
       });
-      if (!response.ok) {
-        await clearPasswordReset(user.id);
-        return c.json({ error: "Die E-Mail konnte gerade nicht versendet werden. Bitte später erneut versuchen." }, 503);
-      }
     } catch {
       await clearPasswordReset(user.id);
-      return c.json({ error: "Der E-Mail-Dienst ist gerade nicht erreichbar. Bitte später erneut versuchen." }, 503);
+      return c.json({ error: "Die E-Mail konnte gerade nicht versendet werden. Bitte später erneut versuchen." }, 503);
     }
   }
   return c.json({ success: true, message: "Wenn ein Konto zu dieser Adresse besteht, wurde ein Link zum Zurücksetzen gesendet." });
@@ -237,3 +238,4 @@ export async function resetPassword(c: Context) {
   if (!updated) return c.json({ error: "Der Link ist ungültig oder abgelaufen." }, 400);
   return c.json({ success: true });
 }
+
