@@ -5,7 +5,7 @@ import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "./router";
 import { createContext } from "./context";
 import { env } from "./lib/env";
-import { login, register } from "./auth";
+import { forgotPassword, login, register, resetPassword } from "./auth";
 import { log } from "./lib/logger";
 import { handleClientLog } from "./lib/clientlog";
 import { REQUEST_ID_HEADER, runWithRequestId } from "./lib/requestcontext";
@@ -63,6 +63,8 @@ app.get("/analysis", (c) => c.redirect("/analysis/index.html", 302));
 app.get("/analysis/", (c) => c.redirect("/analysis/index.html", 302));
 app.post("/api/auth/login", bodyLimit({ maxSize: 8 * 1024 }), login);
 app.post("/api/auth/register", bodyLimit({ maxSize: 8 * 1024 }), register);
+app.post("/api/auth/forgot-password", bodyLimit({ maxSize: 8 * 1024 }), forgotPassword);
+app.post("/api/auth/reset-password", bodyLimit({ maxSize: 8 * 1024 }), resetPassword);
 app.use("/api/trpc/*", async (c) => {
   return fetchRequestHandler({
     endpoint: "/api/trpc",

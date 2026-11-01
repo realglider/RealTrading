@@ -78,6 +78,7 @@ export default function Login() {
               {busy ? (registering ? "Konto wird erstellt…" : "Anmeldung läuft…") : (registering ? "Registrieren" : "Anmelden")}
             </Button>
           </form>
+          {!registering && <p className="mt-3 text-right text-sm"><a className="text-muted-foreground underline underline-offset-4 hover:text-foreground" href="/forgot-password">Passwort vergessen?</a></p>}
           <p className="mt-4 text-center text-sm text-muted-foreground">
             {registering ? "Schon ein Konto? " : "Noch kein Konto? "}
             <button className="font-medium text-foreground underline underline-offset-4" type="button" onClick={() => switchMode(registering ? "login" : "register")}>

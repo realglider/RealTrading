@@ -14,4 +14,7 @@ export const env = {
   databaseUrl: required("DATABASE_URL"),
   adminEmail: required("ADMIN_EMAIL").trim().toLowerCase(),
   adminPasswordHash: required("ADMIN_PASSWORD_HASH"),
+  resetEmailApiKey: process.env.RESET_EMAIL_API_KEY ?? "",
+  resetEmailFrom: process.env.RESET_EMAIL_FROM ?? "",
+  publicAppUrl: process.env.PUBLIC_APP_URL ?? "",
 };

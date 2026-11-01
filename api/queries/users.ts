@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import * as schema from "@db/schema";
 import type { InsertUser } from "@db/schema";
 import { getDb } from "./connection";
@@ -30,6 +30,36 @@ export async function updateLastSignIn(userId: number) {
   await getDb()
     .update(schema.users)
     .set({ lastSignInAt: new Date() })
+    .where(eq(schema.users.id, userId));
+}
+
+export async function savePasswordReset(userId: number, tokenHash: string, expiresAt: Date) {
+  await getDb()
+    .update(schema.users)
+    .set({ passwordResetTokenHash: tokenHash, passwordResetExpiresAt: expiresAt })
+    .where(eq(schema.users.id, userId));
+}
+
+export async function consumePasswordReset(tokenHash: string, newPasswordHash: string) {
+  const result = await getDb()
+    .update(schema.users)
+    .set({
+      passwordHash: newPasswordHash,
+      passwordResetTokenHash: null,
+      passwordResetExpiresAt: null,
+      sessionVersion: sql`${schema.users.sessionVersion} + 1`,
+    })
+    .where(and(
+      eq(schema.users.passwordResetTokenHash, tokenHash),
+      gt(schema.users.passwordResetExpiresAt, new Date()),
+    ));
+  return result[0].affectedRows > 0;
+}
+
+export async function clearPasswordReset(userId: number) {
+  await getDb()
+    .update(schema.users)
+    .set({ passwordResetTokenHash: null, passwordResetExpiresAt: null })
     .where(eq(schema.users.id, userId));
 }
 

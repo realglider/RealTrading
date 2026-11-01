@@ -4,6 +4,7 @@ import { env } from "../lib/env";
 type SessionPayload = {
   unionId: string;
   clientId: string;
+  sessionVersion: number;
 };
 
 const JWT_ALG = "HS256";
@@ -32,14 +33,14 @@ export async function verifySessionToken(
       algorithms: [JWT_ALG],
     });
     const { unionId, clientId } = payload;
-    if (!unionId || !clientId) {
+    if (typeof unionId !== "string" || typeof clientId !== "string" || !unionId || !clientId) {
       console.warn("[session] JWT payload missing required fields.");
       return null;
     }
-    return { unionId, clientId } as SessionPayload;
+    const sessionVersion = typeof payload.sessionVersion === "number" ? payload.sessionVersion : 0;
+    return { unionId, clientId, sessionVersion };
   } catch (error) {
     console.warn("[session] JWT verification failed:", error);
     return null;
   }
 }
-
