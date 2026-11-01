@@ -1,6 +1,10 @@
 import * as jose from "jose";
 import { env } from "../lib/env";
-import type { SessionPayload } from "./types";
+
+type SessionPayload = {
+  unionId: string;
+  clientId: string;
+};
 
 const JWT_ALG = "HS256";
 
@@ -38,3 +42,4 @@ export async function verifySessionToken(
     return null;
   }
 }
+
