@@ -4,7 +4,10 @@ import { getSessionCookieOptions } from "./lib/cookies";
 import { createRouter, authedQuery } from "./middleware";
 
 export const authRouter = createRouter({
-  me: authedQuery.query((opts) => opts.ctx.user),
+  me: authedQuery.query(({ ctx }) => {
+    const { id, name, email, avatar, role, createdAt, lastSignInAt } = ctx.user;
+    return { id, name, email, avatar, role, createdAt, lastSignInAt };
+  }),
   logout: authedQuery.mutation(async ({ ctx }) => {
     const opts = getSessionCookieOptions(ctx.req.headers);
     ctx.resHeaders.append(

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MARKETS, TIMEFRAMES } from "@contracts/trading";
-import { adminQuery, createRouter } from "./middleware";
+import { authedQuery, createRouter } from "./middleware";
 import { getCoinDirectory } from "./services/coinDirectory";
 import {
   emergencyStop,
@@ -17,11 +17,11 @@ const market = z.enum(MARKETS);
 const symbol = z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9-]{2,31}$/, "Ungültiges KuCoin-Symbol");
 
 export const botRouter = createRouter({
-  overview: adminQuery.query(({ ctx }) => getOverview(ctx.user.id)),
+  overview: authedQuery.query(({ ctx }) => getOverview(ctx.user.id)),
 
-  coinOptions: adminQuery.input(z.object({ market })).query(({ input }) => getCoinDirectory(input.market)),
+  coinOptions: authedQuery.input(z.object({ market })).query(({ input }) => getCoinDirectory(input.market)),
 
-  saveSettings: adminQuery.input(z.object({
+  saveSettings: authedQuery.input(z.object({
     market,
     symbol,
     timeframe: z.enum(TIMEFRAMES),
@@ -31,7 +31,7 @@ export const botRouter = createRouter({
     leverage: z.number().int().min(1).max(20),
   })).mutation(({ ctx, input }) => saveSettings(ctx.user.id, input)),
 
-  saveCredentials: adminQuery.input(z.object({
+  saveCredentials: authedQuery.input(z.object({
     market,
     key: z.string().trim().min(10).max(128),
     secret: z.string().trim().min(10).max(256),
@@ -39,21 +39,21 @@ export const botRouter = createRouter({
     keyVersion: z.enum(["2", "3"]),
   })).mutation(({ ctx, input }) => saveCredentials(ctx.user.id, input.market, input)),
 
-  removeCredentials: adminQuery.input(z.object({ market })).mutation(({ ctx, input }) =>
+  removeCredentials: authedQuery.input(z.object({ market })).mutation(({ ctx, input }) =>
     removeCredentials(ctx.user.id, input.market),
   ),
 
-  validate: adminQuery.input(z.object({ market })).mutation(({ ctx, input }) =>
+  validate: authedQuery.input(z.object({ market })).mutation(({ ctx, input }) =>
     runValidation(ctx.user.id, input.market),
   ),
 
-  setLive: adminQuery.input(z.object({ market, enabled: z.boolean() })).mutation(({ ctx, input }) =>
+  setLive: authedQuery.input(z.object({ market, enabled: z.boolean() })).mutation(({ ctx, input }) =>
     setLiveEnabled(ctx.user.id, input.market, input.enabled),
   ),
 
-  runNow: adminQuery.input(z.object({ market })).mutation(({ ctx, input }) =>
+  runNow: authedQuery.input(z.object({ market })).mutation(({ ctx, input }) =>
     runMarketForUser(ctx.user.id, input.market),
   ),
 
-  emergencyStop: adminQuery.mutation(({ ctx }) => emergencyStop(ctx.user.id)),
+  emergencyStop: authedQuery.mutation(({ ctx }) => emergencyStop(ctx.user.id)),
 });

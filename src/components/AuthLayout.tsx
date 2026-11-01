@@ -65,7 +65,7 @@ export default function AuthLayout({
               Anmeldung erforderlich
             </h1>
             <p className="text-sm text-muted-foreground text-center max-w-sm">
-              Die Bot-Konsole ist geschützt. Melde dich mit dem Konto an, das diese App erstellt hat.
+              Die Bot-Konsole ist geschützt. Melde dich an oder erstelle ein Konto.
             </p>
           </div>
           <Button
