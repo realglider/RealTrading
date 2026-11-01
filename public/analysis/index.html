@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RealTrading Strategie — Regelbasierte Chartanalyse</title>
+  <meta name="description" content="Browserbasierte Krypto-Chartanalyse mit echten Binance-Marktdaten, technischen Indikatoren und kostenbereinigtem Strategie-Backtest." />
+  <meta name="theme-color" content="#0b0d10" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="vendor/lightweight-charts.js" defer></script>
+  <script src="indicators.js" defer></script>
+  <script src="ai-engine.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- TOP BAR (TradingView Pro Header) -->
+    <header class="top-bar">
+      <div class="top-bar-left">
+        <a class="bot-back-link" href="/" aria-label="Zurück zur Bot-Konsole" title="Zurück zur Bot-Konsole">
+          <span aria-hidden="true">←</span><span>Zurück zum Bot</span>
+        </a>
+        <div class="brand-logo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M3 17L9 11L13 15L21 7" stroke="#2962ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M16 7H21V12" stroke="#00e676" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>RealTrading</span>
+          <span class="brand-badge">STRATEGIE</span>
+        </div>
+
+        <div class="divider-v"></div>
+
+        <!-- Symbol Search Button -->
+        <button class="symbol-btn" id="open-symbol-modal" title="Symbol suchen (Krypto / Paare)">
+          <span id="active-symbol-label">BTCUSDT</span>
+          <span class="symbol-exchange-tag">BINANCE</span>
+          <span style="font-size:10px;color:#868993;">▼</span>
+        </button>
+
+        <!-- Live Header Ticker -->
+        <div class="header-ticker">
+          <span class="header-price" id="hdr-price">–</span>
+          <span class="header-change sig-badge buy" id="hdr-change">+0.00%</span>
+          <div class="header-stat">
+            <span>24h Hoch</span>
+            <span id="hdr-high">–</span>
+          </div>
+          <div class="header-stat">
+            <span>24h Tief</span>
+            <span id="hdr-low">–</span>
+          </div>
+          <div class="header-stat">
+            <span>24h Vol</span>
+            <span id="hdr-vol">–</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Timeframes & Overlays -->
+      <div class="top-bar-center">
+        <div class="btn-group" title="Zeitfenster wählen">
+          <button class="tf-btn" data-tf="1m">1m</button>
+          <button class="tf-btn" data-tf="5m">5m</button>
+          <button class="tf-btn active" data-tf="15m">15m</button>
+          <button class="tf-btn" data-tf="30m">30m</button>
+          <button class="tf-btn" data-tf="1h">1H</button>
+          <button class="tf-btn" data-tf="4h">4H</button>
+          <button class="tf-btn" data-tf="1d">1D</button>
+        </div>
+
+        <div class="btn-group" title="Chart-Typ">
+          <button class="tool-pill chart-type-btn active" data-type="candles">Kerzen</button>
+          <button class="tool-pill chart-type-btn" data-type="heikin">Heikin-Ashi</button>
+          <button class="tool-pill chart-type-btn" data-type="area">Fläche</button>
+        </div>
+
+        <div class="divider-v"></div>
+
+        <button class="btn-icon" id="open-indicator-modal" title="Chart-Indikatoren und Overlays auswählen">
+          Indikatoren <span id="indicator-count">9/10</span>
+        </button>
+      </div>
+
+      <!-- Right Controls -->
+      <div class="top-bar-right">
+        <select id="strategy-mode-select" class="strategy-select" title="Handelsstrategie auswählen & live im Chart backtesten">
+          <option value="lsob_strategy" selected>🧱 Strategie: LSOB & Liquidity Sweep (Wick-to-Wick OB)</option>
+          <option value="fib_882_lsob">🎯 Strategie: 0.882 Fibonacci Sniper</option>
+          <option value="ensemble">🧠 Strategie: KI Smart-Ensemble (Anti-Chase)</option>
+          <option value="smc_sweep">💧 Strategie: Smart Money & Liquidity Sweep (SMC)</option>
+          <option value="mean_reversion">🌊 Strategie: Mean Reversion (Support/BB Bounce)</option>
+          <option value="trend_pullback">🚀 Strategie: EMA Golden Pullback (Trendfolge)</option>
+          <option value="divergence_sniper">⚡ Strategie: RSI & MACD Divergenz-Sniper</option>
+          <option value="squeeze_breakout">💥 Strategie: Volatility Squeeze Breakout</option>
+        </select>
+
+        <button class="btn-ai-primary" id="open-strategy-ranker" title="Alle 8 Strategien mit identischen Backtest-Annahmen vergleichen">
+          Strategien vergleichen
+        </button>
+
+        <button class="btn-icon" id="open-ai-settings" title="Optionale Gemini- oder OpenAI-Verbindung konfigurieren">
+          KI-Einstellungen
+        </button>
+
+        <div class="live-status loading" id="connection-status" role="status" title="Marktdaten werden geladen">
+          <span class="pulse-dot"></span>
+          <span id="connection-label">LÄDT</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="app-status" id="app-status" role="status" aria-live="polite" hidden>
+      <span id="app-status-message"></span>
+      <button class="btn-icon" id="retry-market-data" type="button">Erneut laden</button>
+      <button class="status-dismiss" id="dismiss-app-status" type="button" aria-label="Hinweis schließen">×</button>
+    </div>
+
+    <!-- MAIN WORKSPACE -->
+    <div class="workspace">
+      <!-- Left Quick Toolbar -->
+      <aside class="left-toolbar">
+        <button class="left-tool-btn active" id="left-tpsl-btn" title="Entry / Stop-Loss / Take-Profit Linien ein-/ausblenden">🎯</button>
+        <button class="left-tool-btn active" id="left-sr-btn" title="Support & Resistance Zonen ein-/ausblenden">🧱</button>
+        <button class="left-tool-btn active" id="left-trend-btn" title="Auto-Trendlinien ein-/ausblenden">📐</button>
+        <button class="left-tool-btn" id="left-fit-btn" title="Chart-Ansicht automatisch einpassen">🔍</button>
+      </aside>
+
+      <!-- Center Column: Main Chart + Oscillator Subchart + Backtesting Dock -->
+      <main class="center-column">
+        <!-- Main Candlestick Chart Stage -->
+        <div class="chart-stage">
+          <div id="main-chart"></div>
+
+          <!-- Top-Left OHLC + Indicator Legend -->
+          <div class="chart-overlay-legend">
+            <div class="legend-title-row">
+              <span id="leg-symbol">BTCUSDT • 15M</span>
+              <div class="legend-ohlc" id="leg-ohlc"></div>
+            </div>
+            <div class="legend-indicators-row" id="leg-indicators"></div>
+          </div>
+
+          <!-- Top-Right Live AI Setup HUD inside Chart -->
+          <div class="chart-setup-hud">
+            <span class="hud-badge bull" id="hud-verdict-badge">KI ANALYSIERT...</span>
+            <div class="hud-levels">
+              <div class="hud-level-item">
+                <small>Entry</small>
+                <span id="hud-entry" class="text-accent">–</span>
+              </div>
+              <div class="hud-level-item">
+                <small>Stop-Loss</small>
+                <span id="hud-sl" class="text-bear">–</span>
+              </div>
+              <div class="hud-level-item">
+                <small>TP1 (1.5R)</small>
+                <span id="hud-tp1" class="text-bull">–</span>
+              </div>
+              <div class="hud-level-item">
+                <small>TP2 (Ziel)</small>
+                <span id="hud-tp2" class="text-bull">–</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Synchronized Subchart (RSI 14 + Divergences / MACD 12,26,9) -->
+        <div class="subchart-stage">
+          <div id="sub-chart"></div>
+          <div class="subchart-header">
+            <button class="sub-tab active" data-sub="rsi">RSI (14) + Divergenzen</button>
+            <button class="sub-tab" data-sub="macd">MACD (12, 26, 9)</button>
+            <span class="sub-val" id="subchart-live-val">RSI: –</span>
+          </div>
+        </div>
+
+        <!-- Bottom Dock: Live Strategy Backtesting & Signal Log -->
+        <section class="bottom-dock">
+          <div class="dock-header">
+            <div class="dock-title">
+              <span>Strategie-Backtest <small>400 Kerzen · ein Trade zur Zeit · Einstieg zur nächsten Eröffnung · max. 50 Kerzen</small></span>
+              <div class="backtest-costs" aria-label="Backtest-Kosten">
+                <label>Gebühr / Seite (%) <input id="bt-fee" type="number" value="0.10" min="0" max="2" step="0.01" /></label>
+                <label>Slippage / Seite (%) <input id="bt-slippage" type="number" value="0.02" min="0" max="2" step="0.01" /></label>
+              </div>
+            </div>
+            <div class="backtest-kpis">
+              <div class="kpi-pill">Getestet: <b id="bt-total">0</b></div>
+              <div class="kpi-pill">Trefferquote: <b id="bt-winrate" class="text-bull">–</b></div>
+              <div class="kpi-pill">Profit-Faktor: <b id="bt-pf">–</b></div>
+              <div class="kpi-pill">Netto nach Kosten: <b id="bt-pnl" class="text-bull">–</b></div>
+            </div>
+          </div>
+          <div class="backtest-note">TP1 verschiebt den Stop auf den Entry. Gleichzeitige TP/SL-Berührung wird konservativ als Stop gewertet. Historische Ergebnisse sind keine Prognose; Zeile anklicken, um das Signal zu öffnen.</div>
+
+          <div class="signals-table-wrap">
+            <table class="signals-table">
+              <thead>
+                <tr>
+                  <th>Zeitpunkt</th>
+                  <th>Typ / Richtung</th>
+                  <th>Regel-Score</th>
+                  <th>Einstieg (Entry)</th>
+                  <th>Stop-Loss (SL)</th>
+                  <th>Take-Profit (TP1 / TP2)</th>
+                  <th>Backtest-Ergebnis</th>
+                  <th>Auslösende KI-Faktoren</th>
+                </tr>
+              </thead>
+              <tbody id="signals-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+
+      <!-- Right Sidebar: KI-Chartanalyse, Watchlist & Risiko-Rechner -->
+      <aside class="right-sidebar">
+        <div class="sidebar-tabs">
+          <button class="sidebar-tab active" data-pane="pane-ai">🧠 KI-Analyse</button>
+          <button class="sidebar-tab" data-pane="pane-watchlist">📈 Watchlist</button>
+          <button class="sidebar-tab" data-pane="pane-calc">🛡️ Positions-Rechner</button>
+        </div>
+
+        <!-- PANE 1: KI-Chartanalyse & Kauf/Verkauf-Empfehlung -->
+        <div class="sidebar-pane active" id="pane-ai">
+          <!-- Verdict & Bull/Bear Pressure -->
+          <div class="ai-card">
+            <div class="ai-verdict-header">
+              <span class="ai-signal-pill hud-badge bull" id="ai-verdict-pill">LADE DATEN...</span>
+              <div class="ai-score-circle">
+                <span class="score-num text-bull" id="ai-confidence-num">–</span>
+                <small>Regel-Score</small>
+              </div>
+            </div>
+
+            <div class="pressure-bar-wrap">
+              <div class="pressure-labels">
+                <span class="text-bull" id="bull-pct-lbl">Bullen 50%</span>
+                <span class="text-bear" id="bear-pct-lbl">Bären 50%</span>
+              </div>
+              <div class="pressure-track">
+                <div class="pressure-bull-fill" id="pressure-bull-bar" style="width:50%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Concrete Actionable Trade Setup -->
+          <div class="ai-card">
+            <div style="font-weight:700;font-size:12px;color:#fff;" id="setup-card-title">
+              🎯 Aktives KI Trade-Setup
+            </div>
+            <div class="setup-grid">
+              <div class="setup-box">
+                <div class="lbl"><span>Einstieg (Entry)</span><span id="setup-entry-type">MARKT</span></div>
+                <div class="val text-accent" id="setup-entry-val">–</div>
+              </div>
+              <div class="setup-box">
+                <div class="lbl"><span>Stop-Loss (SL)</span><span>ATR-SCHUTZ</span></div>
+                <div class="val text-bear" id="setup-sl-val">–</div>
+              </div>
+              <div class="setup-box">
+                <div class="lbl"><span>Take-Profit 1</span><span>Stop danach auf Entry</span></div>
+                <div class="val text-bull" id="setup-tp1-val">–</div>
+              </div>
+              <div class="setup-box">
+                <div class="lbl"><span>Take-Profit 2</span><span>Hauptziel</span></div>
+                <div class="val text-bull" id="setup-tp2-val">–</div>
+              </div>
+              <div class="setup-box">
+                <div class="lbl"><span>Take-Profit 3</span><span>Runner</span></div>
+                <div class="val text-bull" id="setup-tp3-val">–</div>
+              </div>
+              <div class="setup-box">
+                <div class="lbl"><span>Chance / Risiko</span><span>CRV</span></div>
+                <div class="val" id="setup-rr-val">1 : 2.5</div>
+              </div>
+            </div>
+
+            <!-- Quick Switch: Market Setup vs. Deep Limit-Long at S2 (e.g. 98.60) vs. Pullback-Short at R1 -->
+            <div style="margin-top:9px;padding-top:8px;border-top:1px solid #2a2e39;display:flex;flex-direction:column;gap:5px;">
+              <div style="font-size:10.5px;color:#868993;font-weight:600;">
+                📌 Institutionelle Limit-Order-Zonen im Chart testen:
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;">
+                <button class="btn-icon" id="btn-zone-live" style="justify-content:center;font-size:10.5px;padding:4px 6px;border-color:#2962ff;">
+                  ⚡ Aktuell
+                </button>
+                <button class="btn-icon text-bull" id="btn-zone-deep-long" style="justify-content:center;font-size:10.5px;padding:4px 6px;" title="Limit-Long am tiefen Liquiditäts-Support S2 im Chart einzeichnen">
+                  🟢 Limit-Long S2
+                </button>
+                <button class="btn-icon text-bear" id="btn-zone-pullback-short" style="justify-content:center;font-size:10.5px;padding:4px 6px;" title="Pullback-Short am Widerstand R1 im Chart einzeichnen">
+                  🔴 Limit-Short R1
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 6-Factor Confluence Check -->
+          <div class="ai-card">
+            <div style="font-weight:700;font-size:12px;color:#fff;">
+              ⚡ Multi-Indikator Confluence-Matrix
+            </div>
+            <div class="factor-list" id="ai-factors-list"></div>
+          </div>
+
+          <!-- Detected Candlestick & SMC Patterns -->
+          <div class="ai-card">
+            <div style="font-weight:700;font-size:12px;color:#fff;">
+              🕯️ Erkannte Kerzen- & Smart-Money-Muster
+            </div>
+            <div class="pattern-tags" id="ai-patterns-wrap"></div>
+          </div>
+
+          <!-- Detailed German AI Narrative + Deep Analysis Button -->
+          <div class="ai-card">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <span style="font-weight:700;font-size:12px;color:#fff;">📝 KI-Chartbericht</span>
+              <button class="btn-ai-primary" id="btn-run-deep-ai">✨ Tiefe KI-Synthese</button>
+            </div>
+            <div class="ai-narrative" id="ai-narrative-box">Analysiere Echtzeit-Marktdaten...</div>
+          </div>
+          <p class="risk-disclaimer">Regelbasierte technische Analyse, keine Finanzberatung und keine Orderausführung. Backtests können Datenqualität, Liquidität und reale Ausführung nur begrenzt abbilden.</p>
+        </div>
+
+        <!-- PANE 2: Live Watchlist -->
+        <div class="sidebar-pane" id="pane-watchlist">
+          <div style="font-weight:700;font-size:12px;color:#fff;margin-bottom:4px;">
+            🔥 Top 60 Krypto Watchlist (inkl. ONDO, ZEC, ZETA/ZEX, KAS, TAO)
+          </div>
+          <input
+            type="text"
+            id="watchlist-filter-input"
+            class="calc-input"
+            placeholder="Watchlist filtern (z. B. ONDO, ZEC, SOL, KAS, PEPE)..."
+            style="margin-bottom:6px;"
+          />
+          <div class="watchlist-items" id="watchlist-container"></div>
+        </div>
+
+        <!-- PANE 3: Position Size & Risk Calculator -->
+        <div class="sidebar-pane" id="pane-calc">
+          <div class="ai-card">
+            <div style="font-weight:700;font-size:13px;color:#fff;margin-bottom:8px;">
+              🛡️ Automatischer Positionsgrößen-Rechner
+            </div>
+            <p style="font-size:11.5px;color:#868993;margin-bottom:12px;">
+              Berechnet die Positionsgröße aus Kontogröße, Risikobudget und Stop-Abstand des gewählten Setups. Gebühren, Slippage und Lot-Regeln sind hier nicht enthalten.
+            </p>
+
+            <div class="calc-group">
+              <label>Gesamtkapital / Kontogröße (USDT)</label>
+              <input type="number" id="calc-capital" class="calc-input" value="2500" min="10" step="100" />
+            </div>
+
+            <div class="calc-group">
+              <label>Max. Risiko pro Trade (% vom Kapital)</label>
+              <input type="number" id="calc-risk-pct" class="calc-input" value="1.0" min="0.1" max="10" step="0.25" />
+            </div>
+
+            <div class="factor-list" style="margin-top:12px;">
+              <div class="factor-item neutral">
+                <span>Maximaler Verlust (bei SL)</span>
+                <span class="factor-status text-bear" id="calc-res-risk-usd">–</span>
+              </div>
+              <div class="factor-item bull">
+                <span>Berechnete Positionsgröße</span>
+                <span class="factor-status text-accent" id="calc-res-pos-usd">–</span>
+              </div>
+              <div class="factor-item bull">
+                <span>Exakte Stückzahl (Coins)</span>
+                <span class="factor-status" id="calc-res-qty">–</span>
+              </div>
+              <div class="factor-item neutral">
+                <span>Rechnerischer Hebel</span>
+                <span class="factor-status text-warn" id="calc-res-lev">–</span>
+              </div>
+              <div class="factor-item bull">
+                <span>Erwarteter Gewinn (bei TP2)</span>
+                <span class="factor-status text-bull" id="calc-res-profit">–</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- MODAL 1: Symbol Search -->
+  <div class="modal-backdrop" id="symbol-modal">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="symbol-modal-title">
+      <div class="modal-header">
+        <span id="symbol-modal-title">Symbol / Markt auswählen</span>
+        <button class="btn-icon" id="close-symbol-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input
+          type="text"
+          id="symbol-search-input"
+          class="calc-input"
+          placeholder="Symbol eingeben (z. B. BTCUSDT, ETHUSDT, SOLUSDT,RENDERUSDT, FETUSDT) + Enter..."
+        />
+        <div class="symbol-grid" id="modal-symbol-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: AI Provider Settings -->
+  <div class="modal-backdrop" id="ai-settings-modal">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="ai-settings-title">
+      <div class="modal-header">
+        <span id="ai-settings-title">KI-Analyse & optionale LLM-Verbindung</span>
+        <button class="btn-icon" id="close-ai-settings">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-copy">
+          Die lokale Quant-Engine benötigt keinen API-Schlüssel. Optional kannst du für „Tiefe KI-Synthese“ ein Sprachmodell direkt aus dem Browser aufrufen.
+        </p>
+        <div class="calc-group">
+          <label for="ai-provider-select">Sprachmodell-Anbieter</label>
+          <select id="ai-provider-select" class="calc-input">
+            <option value="local">Integrierte Quant-Engine (ohne API-Key)</option>
+            <option value="gemini">Google Gemini API (gemini-2.5-flash)</option>
+            <option value="openai">OpenAI API (gpt-4o-mini)</option>
+          </select>
+        </div>
+        <div class="calc-group">
+          <label for="ai-api-key-input">API-Key für Gemini oder OpenAI</label>
+          <input type="password" id="ai-api-key-input" class="calc-input" placeholder="Nur für diese Sitzung" autocomplete="off" spellcheck="false" />
+          <small class="field-note">Der Schlüssel wird nicht gespeichert und nach dem Neuladen entfernt. Die Anfrage geht direkt an den gewählten Anbieter; Anbieterkosten können anfallen.</small>
+        </div>
+        <button class="btn-ai-primary" id="save-ai-settings">
+          Für diese Sitzung übernehmen
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: Multi-Strategy Ranker & Backtest Comparison -->
+  <div class="modal-backdrop" id="strategy-ranker-modal">
+    <div class="modal-box modal-box-wide" role="dialog" aria-modal="true" aria-labelledby="ranker-modal-title">
+      <div class="modal-header">
+        <span id="ranker-modal-title">Strategievergleich auf dem aktuellen Chart</span>
+        <button class="btn-icon" id="close-strategy-ranker">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-copy">
+          Alle <b>8 Strategien</b> verwenden denselben Kostenansatz und dieselben Ausführungsregeln. Die Rangfolge berücksichtigt Trefferquote, Profit-Faktor, Netto-R und Stichprobengröße. Sie ist ein In-sample-Vergleich, kein Beweis für zukünftige Überlegenheit.
+        </p>
+        <div id="strategy-ranker-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 4: Indicators & Chart Overlays -->
+  <div class="modal-backdrop" id="indicator-modal">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="indicator-modal-title">
+      <div class="modal-header">
+        <span id="indicator-modal-title">Indikatoren & Chart-Overlays</span>
+        <button class="btn-icon" id="close-indicator-modal" aria-label="Indikatoren schließen">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="indicator-bar">
+          <button class="ind-toggle active" data-overlay="signals" aria-pressed="true" title="Regelbasierte Kauf- und Verkaufssignale im Chart"><span class="ind-dot" style="background:#00bb7f;"></span>BUY/SELL Signale</button>
+          <button class="ind-toggle active" data-overlay="tpSlLines" aria-pressed="true" title="Entry, Stop-Loss und Take-Profit im Chart"><span class="ind-dot" style="background:#3080ff;"></span>Entry / TP / SL</button>
+          <button class="ind-toggle active" data-overlay="lsobBox" aria-pressed="true" title="LSOB-Zonen im Chart"><span class="ind-dot" style="background:#00bb7f;"></span>LSOB Zonen</button>
+          <button class="ind-toggle active" data-overlay="fib882" aria-pressed="true" title="Fibonacci-Retracement-Level im Chart"><span class="ind-dot" style="background:#eab308;"></span>Fib 0.882</button>
+          <button class="ind-toggle active" data-overlay="srZones" aria-pressed="true" title="Support- und Widerstandszonen"><span class="ind-dot" style="background:#f59e0b;"></span>S/R Zonen</button>
+          <button class="ind-toggle active" data-overlay="trendlines" aria-pressed="true" title="Automatische Pivot-Trendlinien"><span class="ind-dot" style="background:#fb2c36;"></span>Trendlinien</button>
+          <button class="ind-toggle active" data-overlay="patterns" aria-pressed="true" title="Kerzenmuster und Smart-Money-Muster"><span class="ind-dot" style="background:#38bdf8;"></span>Muster & SMC</button>
+          <button class="ind-toggle active" data-overlay="ema" aria-pressed="true" title="EMA 20, 50 und 200"><span class="ind-dot" style="background:#a855f7;"></span>EMA 20/50/200</button>
+          <button class="ind-toggle" data-overlay="bb" aria-pressed="false" title="Bollinger-Bänder (20, 2)"><span class="ind-dot" style="background:#60a5fa;"></span>Bollinger</button>
+          <button class="ind-toggle active" data-overlay="vwap" aria-pressed="true" title="VWAP"><span class="ind-dot" style="background:#ec4899;"></span>VWAP</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

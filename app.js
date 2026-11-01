@@ -86,6 +86,17 @@
     aiEval: null,
     selectedSignal: null, // If user clicked a specific historical signal or limit zone preview
     ws: null,
+    wsReconnectTimer: null,
+    wsReconnectAttempts: 0,
+    marketAbort: null,
+    loadId: 0,
+    isFuturesSymbol: false,
+    tickerLoading: false,
+    spotExchangeSymbols: null,
+    futuresExchangeSymbols: null,
+    futuresExchangeCheckedAt: 0,
+    statusTimer: null,
+    lastFocusedElement: null,
     watchlistPrices: {},
     overlays: {
       ema: true,
@@ -101,8 +112,7 @@
     },
     aiSettings: {
       provider: localStorage.getItem('tv_ai_provider') || 'local',
-      apiKey: localStorage.getItem('tv_ai_key') || '',
-      ollamaModel: localStorage.getItem('tv_ai_ollama') || 'llama3'
+      apiKey: ''
     }
   };
 
@@ -137,6 +147,73 @@
 
   const fmt = window.AIEngine.formatPrice;
 
+  function setConnectionStatus(mode, label, detail = '') {
+    const el = document.getElementById('connection-status');
+    if (!el) return;
+    el.className = `live-status ${mode}`;
+    el.title = detail || label;
+    document.getElementById('connection-label').textContent = label;
+  }
+
+  function hideAppStatus() {
+    const banner = document.getElementById('app-status');
+    if (banner) banner.hidden = true;
+  }
+
+  function showAppStatus(message, type = 'info', autoHideMs = 0) {
+    const banner = document.getElementById('app-status');
+    if (!banner) return;
+    if (state.statusTimer) clearTimeout(state.statusTimer);
+    document.getElementById('app-status-message').textContent = message;
+    banner.className = `app-status ${type}`;
+    banner.hidden = false;
+    if (autoHideMs > 0) {
+      state.statusTimer = setTimeout(hideAppStatus, autoHideMs);
+    }
+  }
+
+  function getBacktestOptions() {
+    const clamp = (value, fallback) => {
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? Math.min(2, Math.max(0, parsed)) : fallback;
+    };
+    return {
+      feePct: clamp(document.getElementById('bt-fee')?.value, 0.1),
+      slippagePct: clamp(document.getElementById('bt-slippage')?.value, 0.02),
+      maxBarsInTrade: 50
+    };
+  }
+
+  function formatProfitFactor(value) {
+    if (value === null || value === undefined) return '–';
+    if (value === Infinity) return '∞';
+    return value.toFixed(2);
+  }
+
+  function updateIndicatorCount() {
+    const active = Object.values(state.overlays).filter(Boolean).length;
+    const count = document.getElementById('indicator-count');
+    if (count) count.textContent = `${active}/10`;
+  }
+
+  function openModal(id) {
+    const modal = document.getElementById(id);
+    if (!modal) return;
+    state.lastFocusedElement = document.activeElement;
+    modal.classList.add('open');
+    const target = modal.querySelector('input, select, button');
+    if (target) target.focus();
+  }
+
+  function closeModal(modalOrId) {
+    const modal = typeof modalOrId === 'string' ? document.getElementById(modalOrId) : modalOrId;
+    if (!modal) return;
+    modal.classList.remove('open');
+    if (state.lastFocusedElement && document.contains(state.lastFocusedElement)) {
+      state.lastFocusedElement.focus();
+    }
+  }
+
   function getPriceFormatMove(price) {
     if (!price || price >= 100) return { precision: 2, minMove: 0.01 };
     if (price >= 1) return { precision: 4, minMove: 0.0001 };
@@ -153,14 +230,14 @@
 
     const commonOptions = {
       layout: {
-        background: { type: 'solid', color: '#131722' },
-        textColor: '#868993',
+        background: { type: 'solid', color: '#12151a' },
+        textColor: '#9a9ca6',
         fontSize: 11,
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif"
+        fontFamily: "'Fira Code', Consolas, monospace"
       },
       grid: {
-        vertLines: { color: 'rgba(42, 46, 57, 0.55)' },
-        horzLines: { color: 'rgba(42, 46, 57, 0.55)' }
+        vertLines: { color: 'rgba(46, 50, 57, 0.48)' },
+        horzLines: { color: 'rgba(46, 50, 57, 0.48)' }
       },
       crosshair: {
         mode: LightweightCharts.CrosshairMode.Normal,
@@ -168,13 +245,13 @@
           color: '#758696',
           width: 1,
           style: LightweightCharts.LineStyle.Dashed,
-          labelBackgroundColor: '#2962ff'
+          labelBackgroundColor: '#3080ff'
         },
         horzLine: {
           color: '#758696',
           width: 1,
           style: LightweightCharts.LineStyle.Dashed,
-          labelBackgroundColor: '#2962ff'
+          labelBackgroundColor: '#3080ff'
         }
       },
       rightPriceScale: {
@@ -253,17 +330,17 @@
       mainSeries = mainChart.addAreaSeries({
         topColor: 'rgba(41, 98, 255, 0.35)',
         bottomColor: 'rgba(41, 98, 255, 0.02)',
-        lineColor: '#2962ff',
+        lineColor: '#3080ff',
         lineWidth: 2
       });
     } else {
       mainSeries = mainChart.addCandlestickSeries({
-        upColor: '#089981',
-        downColor: '#f23645',
-        borderUpColor: '#089981',
-        borderDownColor: '#f23645',
-        wickUpColor: '#089981',
-        wickDownColor: '#f23645'
+        upColor: '#00bb7f',
+        downColor: '#fb2c36',
+        borderUpColor: '#00bb7f',
+        borderDownColor: '#fb2c36',
+        wickUpColor: '#00bb7f',
+        wickDownColor: '#fb2c36'
       });
     }
 
@@ -416,7 +493,7 @@
       lastValueVisible: false
     });
     macdLineSeries = subChart.addLineSeries({
-      color: '#2962ff',
+      color: '#3080ff',
       lineWidth: 1.5,
       priceLineVisible: false
     });
@@ -430,91 +507,118 @@
   /**
    * Fetch historical klines from Binance Spot OR Binance Futures API (for ONDO, KAS, ZETA, etc.)
    */
-  async function fetchKlines(symbol, interval, limit = 400) {
+  async function fetchKlines(symbol, interval, limit = 400, signal) {
     const querySym = symbol === 'ZEXUSDT' ? 'ZETAUSDT' : symbol;
+    const parseKlines = (raw) => raw.map((k) => ({
+      time: Math.floor(k[0] / 1000),
+      open: Number.parseFloat(k[1]),
+      high: Number.parseFloat(k[2]),
+      low: Number.parseFloat(k[3]),
+      close: Number.parseFloat(k[4]),
+      volume: Number.parseFloat(k[5])
+    })).filter((c) => Number.isFinite(c.time) && [c.open, c.high, c.low, c.close, c.volume].every(Number.isFinite));
 
-    // 1. Try Binance Spot endpoints
+    const request = async (url) => {
+      const requestController = new AbortController();
+      const requestTimeout = setTimeout(() => requestController.abort(), 8000);
+      const forwardAbort = () => requestController.abort();
+      signal?.addEventListener('abort', forwardAbort, { once: true });
+      try {
+        const res = await fetch(url, { signal: requestController.signal, cache: 'no-store' });
+        if (!res.ok) return null;
+        const raw = await res.json();
+        if (!Array.isArray(raw) || raw.length === 0) return null;
+        const candles = parseKlines(raw);
+        return candles.length > 0 ? candles : null;
+      } finally {
+        clearTimeout(requestTimeout);
+        signal?.removeEventListener('abort', forwardAbort);
+      }
+    };
+
     for (const base of BINANCE_ENDPOINTS) {
       try {
         const url = `${base}/api/v3/klines?symbol=${encodeURIComponent(querySym)}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
-        const res = await fetch(url);
-        if (!res.ok) continue;
-        const raw = await res.json();
-        if (Array.isArray(raw) && raw.length > 0) {
-          state.isFuturesSymbol = false;
-          return raw.map((k) => ({
-            time: Math.floor(k[0] / 1000),
-            open: parseFloat(k[1]),
-            high: parseFloat(k[2]),
-            low: parseFloat(k[3]),
-            close: parseFloat(k[4]),
-            volume: parseFloat(k[5])
-          }));
-        }
-      } catch (_) {}
+        const candles = await request(url);
+        if (candles) return { candles, isFutures: false };
+      } catch (error) {
+        if (signal?.aborted) throw error;
+      }
     }
 
-    // 2. Try Binance Futures (Perpetuals) endpoint for Futures-listed coins (KAS, ZETA, ONDO, etc.)
     try {
       const futUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(querySym)}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
-      const res = await fetch(futUrl);
-      if (res.ok) {
-        const raw = await res.json();
-        if (Array.isArray(raw) && raw.length > 0) {
-          state.isFuturesSymbol = true;
-          return raw.map((k) => ({
-            time: Math.floor(k[0] / 1000),
-            open: parseFloat(k[1]),
-            high: parseFloat(k[2]),
-            low: parseFloat(k[3]),
-            close: parseFloat(k[4]),
-            volume: parseFloat(k[5])
-          }));
-        }
-      }
-    } catch (_) {}
+      const candles = await request(futUrl);
+      if (candles) return { candles, isFutures: true };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
 
-    throw new Error(`Keine echten Marktdaten für ${symbol} verfügbar. Binance Spot und Futures konnten nicht erreicht werden. Bitte Verbindung/Symbol prüfen und erneut laden.`);
+    throw new Error(`Keine echten Marktdaten für ${symbol} verfügbar. Binance Spot und Futures konnten nicht erreicht werden. Bitte Verbindung, Region und Symbol prüfen.`);
   }
 
   /**
    * Connect live Binance WebSocket for real-time kline updates
    */
-  function connectWebSocket(symbol, interval) {
-    if (state.ws) {
-      try {
-        state.ws.close();
-      } catch (_) {}
-      state.ws = null;
+  function disconnectWebSocket() {
+    if (state.wsReconnectTimer) {
+      clearTimeout(state.wsReconnectTimer);
+      state.wsReconnectTimer = null;
     }
+    const ws = state.ws;
+    state.ws = null;
+    if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      try { ws.close(); } catch (_) {}
+    }
+  }
+
+  function connectWebSocket(symbol, interval) {
+    disconnectWebSocket();
+    if (!state.candles.length) return;
 
     const querySym = symbol === 'ZEXUSDT' ? 'ZETAUSDT' : symbol;
     const streamName = `${querySym.toLowerCase()}@kline_${interval}`;
     const wsUrl = state.isFuturesSymbol
       ? `wss://fstream.binance.com/ws/${streamName}`
-      : `wss://stream.binance.com:9443/ws/${streamName}`;
+      : `wss://data-stream.binance.vision/ws/${streamName}`;
 
+    setConnectionStatus('loading', 'VERBINDET', 'Echtzeit-WebSocket wird verbunden');
     try {
       const ws = new WebSocket(wsUrl);
       state.ws = ws;
+      const connectTimeout = setTimeout(() => {
+        if (state.ws === ws && ws.readyState === WebSocket.CONNECTING) ws.close();
+      }, 10000);
+
+      ws.onopen = () => {
+        if (state.ws !== ws) return;
+        clearTimeout(connectTimeout);
+        state.wsReconnectAttempts = 0;
+        setConnectionStatus('live', 'LIVE', `Binance ${state.isFuturesSymbol ? 'Futures' : 'Spot'} · Echtzeit-WebSocket aktiv`);
+      };
 
       ws.onmessage = (event) => {
+        if (state.ws !== ws) return;
         try {
           const msg = JSON.parse(event.data);
           if (!msg.k) return;
           const k = msg.k;
           const liveCandle = {
             time: Math.floor(k.t / 1000),
-            open: parseFloat(k.o),
-            high: parseFloat(k.h),
-            low: parseFloat(k.l),
-            close: parseFloat(k.c),
-            volume: parseFloat(k.v)
+            open: Number.parseFloat(k.o),
+            high: Number.parseFloat(k.h),
+            low: Number.parseFloat(k.l),
+            close: Number.parseFloat(k.c),
+            volume: Number.parseFloat(k.v)
           };
+          if (![liveCandle.time, liveCandle.open, liveCandle.high, liveCandle.low, liveCandle.close].every(Number.isFinite)) return;
 
           const n = state.candles.length;
           if (n === 0) return;
-
           const last = state.candles[n - 1];
           let isNewBar = false;
           if (liveCandle.time === last.time) {
@@ -523,14 +627,42 @@
             state.candles.push(liveCandle);
             if (state.candles.length > 500) state.candles.shift();
             isNewBar = true;
+          } else {
+            return;
           }
 
-          // Update live price in header and watchlist immediately
           updateHeaderPrice(liveCandle.close);
           updateSingleBarOnChart(liveCandle, isNewBar);
-        } catch (_) {}
+        } catch (error) {
+          console.error('[WebSocket message]', error);
+        }
       };
-    } catch (_) {}
+
+      ws.onerror = () => {
+        if (state.ws === ws) setConnectionStatus('offline', 'FEHLER', 'WebSocket-Verbindung fehlgeschlagen');
+      };
+
+      ws.onclose = () => {
+        clearTimeout(connectTimeout);
+        if (state.ws !== ws) return;
+        state.ws = null;
+        setConnectionStatus('offline', 'GETRENNT', 'Echtzeit-Verbindung getrennt');
+        if (state.wsReconnectAttempts >= 5 || !state.candles.length) {
+          showAppStatus('Die Echtzeit-Verbindung ist getrennt. Die zuletzt geladenen Kerzen bleiben sichtbar; sie sind nicht mehr live.', 'error');
+          return;
+        }
+        state.wsReconnectAttempts += 1;
+        const delay = Math.min(30000, 1500 * (2 ** (state.wsReconnectAttempts - 1)));
+        state.wsReconnectTimer = setTimeout(() => {
+          if (state.symbol === symbol && state.timeframe === interval && state.candles.length) {
+            connectWebSocket(symbol, interval);
+          }
+        }, delay);
+      };
+    } catch (error) {
+      setConnectionStatus('offline', 'GETRENNT', 'WebSocket konnte nicht gestartet werden');
+      console.error('[WebSocket]', error);
+    }
   }
 
   function updateSingleBarOnChart(liveCandle, isNewBar) {
@@ -579,7 +711,8 @@
     state.backtest = window.AIEngine.generateSignalsAndBacktest(
       candles,
       state.indicators,
-      state.strategyMode
+      state.strategyMode,
+      getBacktestOptions()
     );
 
     // 3. Evaluate current market state for AI recommendation & live trade setup
@@ -713,17 +846,17 @@
           markers.push({
             time: sig.time,
             position: 'belowBar',
-            color: '#00e676',
+            color: '#20d99d',
             shape: 'arrowUp',
-            text: `KAUFEN (${sig.score}%)`
+            text: `LONG · Score ${sig.score}`
           });
         } else {
           markers.push({
             time: sig.time,
             position: 'aboveBar',
-            color: '#ff5252',
+            color: '#ff6269',
             shape: 'arrowDown',
-            text: `VERKAUFEN (${sig.score}%)`
+            text: `SHORT · Score ${sig.score}`
           });
         }
       }
@@ -981,7 +1114,7 @@
       activePriceLines.push(
         mainSeries.createPriceLine({
           price: setup.sl,
-          color: '#ff5252',
+          color: '#ff6269',
           lineWidth: 2,
           lineStyle: LightweightCharts.LineStyle.Solid,
           axisLabelVisible: true,
@@ -1005,7 +1138,7 @@
       activePriceLines.push(
         mainSeries.createPriceLine({
           price: setup.tp2,
-          color: '#00e676',
+          color: '#20d99d',
           lineWidth: 2,
           lineStyle: LightweightCharts.LineStyle.Solid,
           axisLabelVisible: true,
@@ -1044,7 +1177,7 @@
       const divMarkers = ind.rsiData.divergences.map((d) => ({
         time: d.time,
         position: d.type === 'BULL_DIV' ? 'belowBar' : 'aboveBar',
-        color: d.type === 'BULL_DIV' ? '#00e676' : '#ff5252',
+        color: d.type === 'BULL_DIV' ? '#20d99d' : '#ff6269',
         shape: d.type === 'BULL_DIV' ? 'arrowUp' : 'arrowDown',
         text: d.label
       }));
@@ -1063,11 +1196,11 @@
         const h = ind.macdData.histogram[i];
         if (h !== null && h !== undefined) {
           const prev = ind.macdData.histogram[i - 1] ?? 0;
-          let color = '#089981';
+          let color = '#00bb7f';
           if (h >= 0) {
-            color = h >= prev ? '#00e676' : 'rgba(8, 153, 129, 0.55)';
+            color = h >= prev ? '#20d99d' : 'rgba(8, 153, 129, 0.55)';
           } else {
-            color = h <= prev ? '#ff5252' : 'rgba(242, 54, 69, 0.55)';
+            color = h <= prev ? '#ff6269' : 'rgba(242, 54, 69, 0.55)';
           }
           histData.push({ time: candles[i].time, value: h, color });
         }
@@ -1107,7 +1240,7 @@
     sigPill.className = `ai-signal-pill hud-badge ${ev.verdictClass}`;
 
     const scoreEl = document.getElementById('ai-confidence-num');
-    scoreEl.textContent = `${ev.confidence}%`;
+    scoreEl.textContent = `${ev.confidence}/100`;
     scoreEl.className = `score-num ${ev.verdictClass === 'bull' ? 'text-bull' : ev.verdictClass === 'bear' ? 'text-bear' : 'text-warn'}`;
 
     document.getElementById('bull-pct-lbl').textContent = `Bullen ${ev.bullPct}%`;
@@ -1192,18 +1325,20 @@
     if (!state.backtest) return;
     const { signals, stats } = state.backtest;
 
-    document.getElementById('bt-total').textContent = stats.totalSignals;
+    document.getElementById('bt-total').textContent = `${stats.testedTrades}/${stats.totalSignals}`;
     const wrEl = document.getElementById('bt-winrate');
-    wrEl.textContent = `${stats.winRate.toFixed(1)}% (${stats.wins}W / ${stats.losses}L)`;
-    wrEl.className = stats.winRate >= 50 ? 'text-bull' : 'text-bear';
+    wrEl.textContent = stats.closedTrades > 0
+      ? `${stats.winRate.toFixed(1)}% (${stats.wins}W / ${stats.losses}L)`
+      : '– (keine abgeschlossenen Trades)';
+    wrEl.className = stats.closedTrades === 0 ? 'text-warn' : stats.winRate >= 50 ? 'text-bull' : 'text-bear';
 
     const pfEl = document.getElementById('bt-pf');
-    pfEl.textContent = stats.profitFactor.toFixed(2);
-    pfEl.className = stats.profitFactor >= 1.2 ? 'text-bull' : 'text-warn';
+    pfEl.textContent = formatProfitFactor(stats.profitFactor);
+    pfEl.className = stats.profitFactor !== null && (stats.profitFactor === Infinity || stats.profitFactor >= 1.2) ? 'text-bull' : 'text-warn';
 
     const pnlEl = document.getElementById('bt-pnl');
-    pnlEl.textContent = `${stats.totalPctGain >= 0 ? '+' : ''}${stats.totalPctGain.toFixed(2)}% (${stats.netR >= 0 ? '+' : ''}${stats.netR.toFixed(1)}R)`;
-    pnlEl.className = stats.totalPctGain >= 0 ? 'text-bull' : 'text-bear';
+    pnlEl.textContent = `${stats.netR >= 0 ? '+' : ''}${stats.netR.toFixed(2)}R · Ø ${stats.expectancyR >= 0 ? '+' : ''}${stats.expectancyR.toFixed(2)}R`;
+    pnlEl.className = stats.netR >= 0 ? 'text-bull' : 'text-bear';
 
     const tbody = document.getElementById('signals-tbody');
     const reversed = [...signals].reverse();
@@ -1211,47 +1346,49 @@
     tbody.innerHTML = reversed
       .map((s) => {
         const dt = new Date(s.time * 1000).toLocaleString('de-DE', {
-          day: '2-digit',
-          month: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit'
+          day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
         });
         const badgeCls = s.side === 'BUY' ? 'buy' : 'sell';
-        const sideLbl = s.side === 'BUY' ? '🟢 KAUFEN (LONG)' : '🔴 VERKAUFEN (SHORT)';
-        const outCls =
-          s.status === 'WIN'
-            ? 'outcome-win'
-            : s.status === 'LOSS'
-            ? 'outcome-loss'
-            : 'outcome-open';
+        const sideLbl = s.side === 'BUY' ? 'LONG' : 'SHORT';
+        const outCls = s.status === 'WIN'
+          ? 'outcome-win'
+          : s.status === 'LOSS'
+          ? 'outcome-loss'
+          : s.status === 'SKIPPED'
+          ? 'outcome-skip'
+          : 'outcome-open';
 
-        return `<tr data-sig-index="${s.index}">
+        return `<tr data-sig-index="${s.index}" tabindex="0" role="button" aria-label="${sideLbl}-Signal vom ${dt} öffnen">
           <td>${dt}</td>
           <td><span class="sig-badge ${badgeCls}">${sideLbl}</span></td>
-          <td><b>${s.score}%</b></td>
+          <td><b>${s.score}</b></td>
           <td>${fmt(s.entry)}</td>
           <td class="text-bear">${fmt(s.sl)}</td>
           <td class="text-bull">${fmt(s.tp1)} / ${fmt(s.tp2)}</td>
           <td><span class="outcome-badge ${outCls}">${s.outcomeLabel}</span></td>
-          <td style="color:#868993;font-family:var(--font-sans);">${s.reasons.join(' • ') || 'Multi-Confluence'}</td>
+          <td style="color:var(--tv-text-secondary);font-family:var(--font-sans);">${s.reasons.join(' • ') || 'Multi-Confluence'}</td>
         </tr>`;
       })
       .join('');
 
-    // Click row to focus chart on that signal candle and preview its Entry/SL/TP lines!
     tbody.querySelectorAll('tr').forEach((row) => {
-      row.addEventListener('click', () => {
-        const idx = parseInt(row.getAttribute('data-sig-index'), 10);
+      const activate = () => {
+        const idx = Number.parseInt(row.getAttribute('data-sig-index'), 10);
         const found = signals.find((x) => x.index === idx);
         if (!found) return;
-
         state.selectedSignal = found;
         renderPriceLines();
         renderAIDashboard();
-
         const fromIdx = Math.max(0, idx - 35);
         const toIdx = Math.min(state.candles.length - 1, idx + 35);
         mainChart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
+      };
+      row.addEventListener('click', activate);
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          activate();
+        }
       });
     });
   }
@@ -1308,55 +1445,120 @@
     }
   }
 
+  async function requestExchangeSymbols(base, apiPath) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(`${base}${apiPath}`, {
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      if (!res.ok) throw new Error(`ExchangeInfo HTTP ${res.status}`);
+      const info = await res.json();
+      if (!Array.isArray(info.symbols)) throw new Error('Ungültiges Marktverzeichnis');
+      return new Set(info.symbols.filter((item) => item.status === 'TRADING').map((item) => item.symbol));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Request ticker groups recursively as a safeguard for listing changes.
+   */
+  async function requestTickerSymbols(base, apiPath, symbols) {
+    if (!symbols.length) return [];
+    const symbolsQuery = encodeURIComponent(JSON.stringify(symbols));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const res = await fetch(`${base}${apiPath}?symbols=${symbolsQuery}`, {
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      if (!res.ok) throw new Error(`Ticker HTTP ${res.status}`);
+      const list = await res.json();
+      if (!Array.isArray(list)) throw new Error('Ungültige Ticker-Antwort');
+      return list;
+    } catch (_) {
+      clearTimeout(timeout);
+      if (symbols.length === 1) return [];
+      const middle = Math.ceil(symbols.length / 2);
+      const [left, right] = await Promise.all([
+        requestTickerSymbols(base, apiPath, symbols.slice(0, middle)),
+        requestTickerSymbols(base, apiPath, symbols.slice(middle))
+      ]);
+      return [...left, ...right];
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   /**
    * Fetch 24h Ticker stats for Header & Watchlist (Spot + Futures for all 60+ top coins)
    */
   async function refreshWatchlistAndTicker() {
+    if (state.tickerLoading || document.hidden) return;
+    state.tickerLoading = true;
     const wantedSet = new Set(WATCHLIST_SYMBOLS.map((s) => s.symbol));
     wantedSet.add(state.symbol);
+    const wantedSymbols = [...wantedSet];
+    const parseTicker = (item) => ({
+      lastPrice: Number.parseFloat(item.lastPrice),
+      priceChangePercent: Number.parseFloat(item.priceChangePercent),
+      highPrice: Number.parseFloat(item.highPrice),
+      lowPrice: Number.parseFloat(item.lowPrice),
+      quoteVolume: Number.parseFloat(item.quoteVolume)
+    });
 
-    // 1. Fetch Spot 24hr tickers
-    for (const base of BINANCE_ENDPOINTS) {
-      try {
-        const res = await fetch(`${base}/api/v3/ticker/24hr`);
-        if (!res.ok) continue;
-        const list = await res.json();
-        for (const item of list) {
-          if (wantedSet.has(item.symbol)) {
-            state.watchlistPrices[item.symbol] = {
-              lastPrice: parseFloat(item.lastPrice),
-              priceChangePercent: parseFloat(item.priceChangePercent),
-              highPrice: parseFloat(item.highPrice),
-              lowPrice: parseFloat(item.lowPrice),
-              quoteVolume: parseFloat(item.quoteVolume)
-            };
-          }
-        }
-        break;
-      } catch (_) {}
-    }
-
-    // 2. Fetch Futures 24hr tickers for Futures-listed coins (e.g. ONDOUSDT, KASUSDT, ZETAUSDT)
     try {
-      const fRes = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
-      if (fRes.ok) {
-        const fList = await fRes.json();
-        for (const item of fList) {
-          if (wantedSet.has(item.symbol) && !state.watchlistPrices[item.symbol]) {
-            state.watchlistPrices[item.symbol] = {
-              lastPrice: parseFloat(item.lastPrice),
-              priceChangePercent: parseFloat(item.priceChangePercent),
-              highPrice: parseFloat(item.highPrice),
-              lowPrice: parseFloat(item.lowPrice),
-              quoteVolume: parseFloat(item.quoteVolume)
-            };
+      let spotList = [];
+      for (const base of BINANCE_ENDPOINTS) {
+        try {
+          if (!state.spotExchangeSymbols) {
+            state.spotExchangeSymbols = await requestExchangeSymbols(base, '/api/v3/exchangeInfo');
           }
+          const spotSymbols = wantedSymbols.filter((symbol) => state.spotExchangeSymbols.has(symbol));
+          spotList = await requestTickerSymbols(base, '/api/v3/ticker/24hr', spotSymbols);
+          if (spotList.length || spotSymbols.length === 0) break;
+        } catch (_) {
+          state.spotExchangeSymbols = null;
         }
       }
-    } catch (_) {}
+      for (const item of spotList) {
+        if (wantedSet.has(item.symbol)) state.watchlistPrices[item.symbol] = parseTicker(item);
+      }
 
-    renderWatchlistUI();
-    updateCurrentSymbolHeaderStats();
+      // Render available Spot data immediately; Futures fallback must not delay it.
+      renderWatchlistUI();
+      updateCurrentSymbolHeaderStats();
+
+      const missingSymbols = wantedSymbols.filter((symbol) => !state.watchlistPrices[symbol]);
+      const futuresCheckDue = Date.now() - state.futuresExchangeCheckedAt > 300000;
+      if (missingSymbols.length && futuresCheckDue && (!state.futuresExchangeSymbols || state.futuresExchangeSymbols.size === 0)) {
+        state.futuresExchangeCheckedAt = Date.now();
+        try {
+          state.futuresExchangeSymbols = await requestExchangeSymbols('https://fapi.binance.com', '/fapi/v1/exchangeInfo');
+        } catch (_) {
+          state.futuresExchangeSymbols = new Set();
+        }
+      }
+      if (missingSymbols.length && state.futuresExchangeSymbols?.size) {
+        const futuresSymbols = missingSymbols.filter((symbol) => state.futuresExchangeSymbols.has(symbol));
+        const futuresList = await requestTickerSymbols(
+          'https://fapi.binance.com',
+          '/fapi/v1/ticker/24hr',
+          futuresSymbols
+        );
+        for (const item of futuresList) {
+          if (wantedSet.has(item.symbol)) state.watchlistPrices[item.symbol] = parseTicker(item);
+        }
+        renderWatchlistUI();
+        updateCurrentSymbolHeaderStats();
+      }
+    } finally {
+      state.tickerLoading = false;
+    }
   }
 
   function updateCurrentSymbolHeaderStats() {
@@ -1396,25 +1598,32 @@
     wrap.innerHTML = filtered.map((item) => {
       const st = state.watchlistPrices[item.symbol];
       const price = st ? fmt(st.lastPrice) : '–';
-      const chg = st ? st.priceChangePercent : 0;
-      const sign = chg >= 0 ? '+' : '';
-      const cls = chg >= 0 ? 'text-bull' : 'text-bear';
+      const chg = st ? st.priceChangePercent : null;
+      const sign = chg !== null && chg >= 0 ? '+' : '';
+      const cls = chg === null ? '' : chg >= 0 ? 'text-bull' : 'text-bear';
       const activeCls = item.symbol === state.symbol ? 'active' : '';
 
-      return `<div class="wl-row ${activeCls}" data-sym="${item.symbol}">
+      return `<div class="wl-row ${activeCls}" data-sym="${item.symbol}" role="button" tabindex="0" aria-label="${item.name} öffnen">
         <div class="wl-sym">
-          <span>${item.base}<span style="color:#868993;font-weight:400;">/USDT</span></span>
+          <span>${item.base}<span style="color:var(--tv-text-secondary);font-weight:400;">/USDT</span></span>
           <small>${item.name}</small>
         </div>
         <div class="wl-price">${price}</div>
-        <div class="wl-chg ${cls}">${sign}${chg.toFixed(2)}%</div>
+        <div class="wl-chg ${cls}">${chg === null ? '–' : `${sign}${chg.toFixed(2)}%`}</div>
       </div>`;
     }).join('');
 
     wrap.querySelectorAll('.wl-row').forEach((row) => {
-      row.addEventListener('click', () => {
+      const activate = () => {
         const sym = row.getAttribute('data-sym');
         if (sym) loadSymbolAndTimeframe(sym, state.timeframe);
+      };
+      row.addEventListener('click', activate);
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          activate();
+        }
       });
     });
   }
@@ -1428,50 +1637,83 @@
     const setup = state.selectedSignal || ev.activeSetup;
     if (!setup) return;
 
-    const capital = parseFloat(document.getElementById('calc-capital').value) || 1000;
-    const riskPct = parseFloat(document.getElementById('calc-risk-pct').value) || 1.0;
+    const capitalInput = Number.parseFloat(document.getElementById('calc-capital').value);
+    const riskInput = Number.parseFloat(document.getElementById('calc-risk-pct').value);
+    const capital = Number.isFinite(capitalInput) ? Math.max(10, capitalInput) : 1000;
+    const riskPct = Number.isFinite(riskInput) ? Math.min(10, Math.max(0.1, riskInput)) : 1;
 
     const riskAmountUsd = capital * (riskPct / 100);
     const stopDistancePct = Math.max(setup.riskPct / 100, 0.0005);
     const positionValueUsd = riskAmountUsd / stopDistancePct;
     const coinQty = positionValueUsd / setup.entry;
-    const recommendedLeverage = Math.max(1, Math.min(20, Math.ceil(positionValueUsd / capital)));
-
+    const requiredLeverage = Math.max(1, positionValueUsd / capital);
     const tp2ProfitUsd = riskAmountUsd * setup.rr;
 
     document.getElementById('calc-res-risk-usd').textContent = `${riskAmountUsd.toFixed(2)} USDT`;
     document.getElementById('calc-res-pos-usd').textContent = `${positionValueUsd.toFixed(2)} USDT`;
     document.getElementById('calc-res-qty').textContent = `${coinQty.toFixed(4)} ${state.symbol.replace('USDT', '')}`;
-    document.getElementById('calc-res-lev').textContent = `${recommendedLeverage}x`;
-    document.getElementById('calc-res-profit').textContent = `+${tp2ProfitUsd.toFixed(2)} USDT (bei TP2)`;
+    document.getElementById('calc-res-lev').textContent = `${requiredLeverage.toFixed(1)}x${requiredLeverage > 20 ? ' · prüfen' : ''}`;
+    document.getElementById('calc-res-profit').textContent = `+${tp2ProfitUsd.toFixed(2)} USDT vor Kosten`;
   }
 
   /**
    * Load a symbol and timeframe
    */
   async function loadSymbolAndTimeframe(symbol, timeframe) {
-    state.symbol = symbol.toUpperCase().trim();
+    const nextSymbol = symbol.toUpperCase().trim();
+    if (!/^[A-Z0-9]{5,20}$/.test(nextSymbol)) {
+      showAppStatus('Bitte ein gültiges Binance-Symbol eingeben, z. B. BTCUSDT.', 'error', 5000);
+      return;
+    }
+
+    const loadId = ++state.loadId;
+    if (state.marketAbort) state.marketAbort.abort();
+    disconnectWebSocket();
+    const controller = new AbortController();
+    state.marketAbort = controller;
+    const timeout = setTimeout(() => controller.abort(), 35000);
+
+    state.symbol = nextSymbol;
     state.timeframe = timeframe;
     state.selectedSignal = null;
-
-    document.getElementById('active-symbol-label').textContent = state.symbol;
+    document.getElementById('active-symbol-label').textContent = `${state.symbol} · lädt`;
+    setConnectionStatus('loading', 'LÄDT', `${state.symbol} · ${timeframe}`);
+    hideAppStatus();
 
     try {
-      const candles = await fetchKlines(state.symbol, state.timeframe, 400);
-      if (!Array.isArray(candles) || candles.length < 30) {
+      const result = await fetchKlines(state.symbol, state.timeframe, 400, controller.signal);
+      if (loadId !== state.loadId) return;
+      if (!result || !Array.isArray(result.candles) || result.candles.length < 30) {
         throw new Error(`Zu wenige echte Kurskerzen für ${state.symbol}.`);
       }
-      state.candles = candles;
+      state.candles = result.candles;
+      state.isFuturesSymbol = result.isFutures;
+      document.getElementById('active-symbol-label').textContent = state.symbol;
+      document.title = `${state.symbol} · RealTrading Strategie`;
       recomputeAndRenderAll(true);
+      updateCurrentSymbolHeaderStats();
       connectWebSocket(state.symbol, state.timeframe);
       refreshWatchlistAndTicker();
     } catch (error) {
-      console.error('[Market data]', error);
-      if (state.ws) { try { state.ws.close(); } catch (_) {} state.ws = null; }
+      if (loadId !== state.loadId) return;
+      if (error.name !== 'AbortError') console.error('[Market data]', error);
       state.candles = [];
+      state.indicators = null;
       state.backtest = null;
-      document.getElementById('active-symbol-label').textContent = `${state.symbol} · DATENFEHLER`;
-      window.alert(`${error.message}\n\nEs werden bewusst keine künstlichen Kursdaten angezeigt.`);
+      state.aiEval = null;
+      for (const series of [mainSeries, volumeSeries, ema20Series, ema50Series, ema200Series, vwapSeries, rsiSeries, rsiMaSeries, macdHistSeries, macdLineSeries, macdSigSeries]) {
+        try { series?.setData([]); } catch (_) {}
+      }
+      document.getElementById('signals-tbody').innerHTML = '';
+      document.getElementById('active-symbol-label').textContent = `${state.symbol} · Datenfehler`;
+      setConnectionStatus('offline', 'OFFLINE', 'Keine aktuellen Marktdaten');
+      const message = error.name === 'AbortError'
+        ? 'Zeitüberschreitung beim Laden der Binance-Marktdaten. Bitte erneut versuchen.'
+        : (error.message || 'Marktdaten konnten nicht geladen werden.');
+      showAppStatus(`${message} Es werden keine künstlichen Kursdaten oder Signale erzeugt.`, 'error');
+    } finally {
+      clearTimeout(timeout);
+      if (loadId === state.loadId) state.marketAbort = null;
     }
   }
 
@@ -1507,6 +1749,8 @@
         if (!key) return;
         state.overlays[key] = !state.overlays[key];
         btn.classList.toggle('active', state.overlays[key]);
+        btn.setAttribute('aria-pressed', String(state.overlays[key]));
+        updateIndicatorCount();
         recomputeAndRenderAll(false);
       });
     });
@@ -1548,18 +1792,24 @@
       state.overlays.srZones = !state.overlays.srZones;
       e.currentTarget.classList.toggle('active', state.overlays.srZones);
       document.querySelector('[data-overlay="srZones"]')?.classList.toggle('active', state.overlays.srZones);
+      document.querySelector('[data-overlay="srZones"]')?.setAttribute('aria-pressed', String(state.overlays.srZones));
+      updateIndicatorCount();
       renderPriceLines();
     });
     document.getElementById('left-trend-btn').addEventListener('click', (e) => {
       state.overlays.trendlines = !state.overlays.trendlines;
       e.currentTarget.classList.toggle('active', state.overlays.trendlines);
       document.querySelector('[data-overlay="trendlines"]')?.classList.toggle('active', state.overlays.trendlines);
+      document.querySelector('[data-overlay="trendlines"]')?.setAttribute('aria-pressed', String(state.overlays.trendlines));
+      updateIndicatorCount();
       renderIndicatorSeries();
     });
     document.getElementById('left-tpsl-btn').addEventListener('click', (e) => {
       state.overlays.tpSlLines = !state.overlays.tpSlLines;
       e.currentTarget.classList.toggle('active', state.overlays.tpSlLines);
       document.querySelector('[data-overlay="tpSlLines"]')?.classList.toggle('active', state.overlays.tpSlLines);
+      document.querySelector('[data-overlay="tpSlLines"]')?.setAttribute('aria-pressed', String(state.overlays.tpSlLines));
+      updateIndicatorCount();
       renderPriceLines();
     });
 
@@ -1590,6 +1840,11 @@
     document.getElementById('calc-capital').addEventListener('input', updateRiskCalculator);
     document.getElementById('calc-risk-pct').addEventListener('input', updateRiskCalculator);
     document.getElementById('watchlist-filter-input')?.addEventListener('input', renderWatchlistUI);
+    ['bt-fee', 'bt-slippage'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('change', () => {
+        if (state.candles.length) recomputeAndRenderAll(false);
+      });
+    });
 
     // Future Long & Future Short Setup Preview Buttons
     document.getElementById('btn-zone-live')?.addEventListener('click', () => {
@@ -1625,7 +1880,7 @@
     const rankerModal = document.getElementById('strategy-ranker-modal');
     document.getElementById('open-strategy-ranker')?.addEventListener('click', () => {
       if (!state.candles || !state.indicators) return;
-      const ranked = window.AIEngine.compareAllStrategies(state.candles, state.indicators);
+      const ranked = window.AIEngine.compareAllStrategies(state.candles, state.indicators, getBacktestOptions());
       document.getElementById('ranker-modal-title').textContent =
         `🏆 Beste Strategien für ${state.symbol} (${state.timeframe.toUpperCase()})`;
 
@@ -1634,9 +1889,9 @@
         .map((r, idx) => {
           const isCurrent = r.id === state.strategyMode;
           const medal = idx === 0 ? '🥇 #1 SIEGER' : idx === 1 ? '🥈 #2' : idx === 2 ? '🥉 #3' : `#${idx + 1}`;
-          const pnlCls = r.stats.totalPctGain >= 0 ? 'text-bull' : 'text-bear';
+          const pnlCls = r.stats.netR >= 0 ? 'text-bull' : 'text-bear';
           const wrCls = r.stats.winRate >= 52 ? 'text-bull' : 'text-warn';
-          return `<div class="ai-card" style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-color:${idx === 0 ? '#00e676' : isCurrent ? '#2962ff' : '#2a2e39'};">
+          return `<div class="ai-card" style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-color:${idx === 0 ? '#20d99d' : isCurrent ? '#3080ff' : '#2a2e39'};">
             <div style="flex:1;">
               <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;color:#fff;">
                 <span class="sig-badge ${idx === 0 ? 'buy' : ''}" style="font-size:11px;">${medal}</span>
@@ -1646,9 +1901,9 @@
               <div style="font-size:11.5px;color:#868993;margin-top:3px;">${r.description}</div>
               <div style="display:flex;gap:14px;margin-top:7px;font-family:var(--font-mono);font-size:11.5px;">
                 <span>Win-Rate: <b class="${wrCls}">${r.stats.winRate.toFixed(1)}%</b> (${r.stats.wins}W/${r.stats.losses}L)</span>
-                <span>Profit-Faktor: <b>${r.stats.profitFactor.toFixed(2)}</b></span>
-                <span>Gesamt-PnL: <b class="${pnlCls}">${r.stats.totalPctGain >= 0 ? '+' : ''}${r.stats.totalPctGain.toFixed(2)}%</b></span>
-                <span>Signale: <b>${r.stats.totalSignals}</b></span>
+                <span>Profit-Faktor: <b>${formatProfitFactor(r.stats.profitFactor)}</b></span>
+                <span>Netto: <b class="${pnlCls}">${r.stats.netR >= 0 ? '+' : ''}${r.stats.netR.toFixed(2)}R</b></span>
+                <span>Getestet: <b>${r.stats.testedTrades}</b> · offen: ${r.stats.openCount}</span>
               </div>
             </div>
             <button class="btn-ai-primary btn-apply-strat" data-strat="${r.id}" style="white-space:nowrap;">
@@ -1664,26 +1919,25 @@
           state.strategyMode = chosenStrat;
           state.selectedSignal = null;
           document.getElementById('strategy-mode-select').value = chosenStrat;
-          rankerModal.classList.remove('open');
+          closeModal(rankerModal);
           recomputeAndRenderAll(false);
         });
       });
 
-      rankerModal.classList.add('open');
+      openModal('strategy-ranker-modal');
     });
 
     document.getElementById('close-strategy-ranker')?.addEventListener('click', () => {
-      rankerModal.classList.remove('open');
+      closeModal(rankerModal);
     });
 
     // Symbol Search Modal
     const symModal = document.getElementById('symbol-modal');
     document.getElementById('open-symbol-modal').addEventListener('click', () => {
-      symModal.classList.add('open');
-      document.getElementById('symbol-search-input').focus();
+      openModal('symbol-modal');
     });
     document.getElementById('close-symbol-modal').addEventListener('click', () => {
-      symModal.classList.remove('open');
+      closeModal(symModal);
     });
 
     const symGrid = document.getElementById('modal-symbol-grid');
@@ -1694,18 +1948,25 @@
       );
       symGrid.innerHTML = filtered
         .map(
-          (s) => `<div class="sym-option" data-sym="${s.symbol}">
-            <div><b>${s.symbol}</b><div style="font-size:10px;color:#868993;">${s.name}</div></div>
+          (s) => `<div class="sym-option" data-sym="${s.symbol}" role="button" tabindex="0" aria-label="${s.name} auswählen">
+            <div><b>${s.symbol}</b><div style="font-size:10px;color:var(--tv-text-secondary);">${s.name}</div></div>
             <span class="symbol-exchange-tag">BINANCE</span>
           </div>`
         )
         .join('');
 
       symGrid.querySelectorAll('.sym-option').forEach((el) => {
-        el.addEventListener('click', () => {
+        const activate = () => {
           const chosen = el.getAttribute('data-sym');
-          symModal.classList.remove('open');
+          closeModal(symModal);
           loadSymbolAndTimeframe(chosen, state.timeframe);
+        };
+        el.addEventListener('click', activate);
+        el.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            activate();
+          }
         });
       });
     };
@@ -1715,42 +1976,93 @@
     searchInp.addEventListener('input', () => renderModalSymbols(searchInp.value));
     searchInp.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && searchInp.value.trim()) {
+        e.preventDefault();
         let custom = searchInp.value.trim().toUpperCase();
         if (!custom.endsWith('USDT') && !custom.endsWith('BTC') && !custom.endsWith('EUR')) {
           custom += 'USDT';
         }
-        symModal.classList.remove('open');
+        closeModal(symModal);
         loadSymbolAndTimeframe(custom, state.timeframe);
       }
     });
 
-    // AI Settings Modal
+    // AI Settings Modal — credentials stay in memory for this page session only.
     const aiModal = document.getElementById('ai-settings-modal');
     document.getElementById('open-ai-settings').addEventListener('click', () => {
       document.getElementById('ai-provider-select').value = state.aiSettings.provider;
       document.getElementById('ai-api-key-input').value = state.aiSettings.apiKey;
-      document.getElementById('ai-ollama-model').value = state.aiSettings.ollamaModel;
-      aiModal.classList.add('open');
+      openModal('ai-settings-modal');
     });
-    document.getElementById('close-ai-settings').addEventListener('click', () => {
-      aiModal.classList.remove('open');
-    });
+    document.getElementById('close-ai-settings').addEventListener('click', () => closeModal(aiModal));
     document.getElementById('save-ai-settings').addEventListener('click', () => {
       state.aiSettings.provider = document.getElementById('ai-provider-select').value;
       state.aiSettings.apiKey = document.getElementById('ai-api-key-input').value.trim();
-      state.aiSettings.ollamaModel = document.getElementById('ai-ollama-model').value.trim() || 'llama3';
       localStorage.setItem('tv_ai_provider', state.aiSettings.provider);
-      localStorage.setItem('tv_ai_key', state.aiSettings.apiKey);
-      localStorage.setItem('tv_ai_ollama', state.aiSettings.ollamaModel);
-      aiModal.classList.remove('open');
+      localStorage.removeItem('tv_ai_key');
+      closeModal(aiModal);
+      showAppStatus('KI-Einstellungen für diese Sitzung übernommen. Der API-Key wurde nicht dauerhaft gespeichert.', 'success', 4000);
     });
+
+    // Indicator Modal
+    const indicatorModal = document.getElementById('indicator-modal');
+    document.getElementById('open-indicator-modal')?.addEventListener('click', () => openModal('indicator-modal'));
+    document.getElementById('close-indicator-modal')?.addEventListener('click', () => closeModal(indicatorModal));
+
+    // Shared modal behavior: Escape, backdrop close and a simple focus trap.
+    document.querySelectorAll('.modal-backdrop').forEach((modal) => {
+      modal.addEventListener('mousedown', (event) => {
+        if (event.target === modal) closeModal(modal);
+      });
+      modal.addEventListener('keydown', (event) => {
+        if (event.key !== 'Tab') return;
+        const focusable = [...modal.querySelectorAll('button:not(:disabled), input, select, [tabindex="0"]')]
+          .filter((el) => el.offsetParent !== null);
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      });
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      const open = document.querySelector('.modal-backdrop.open');
+      if (open) closeModal(open);
+    });
+
+    document.getElementById('retry-market-data')?.addEventListener('click', () => {
+      loadSymbolAndTimeframe(state.symbol, state.timeframe);
+    });
+    document.getElementById('dismiss-app-status')?.addEventListener('click', hideAppStatus);
   }
 
   // Bootstrap Application on DOM Ready
   window.addEventListener('DOMContentLoaded', () => {
+    localStorage.removeItem('tv_ai_key');
+    localStorage.removeItem('tv_ai_ollama');
+    if (!['local', 'gemini', 'openai'].includes(state.aiSettings.provider)) {
+      state.aiSettings.provider = 'local';
+    }
+    updateIndicatorCount();
     initCharts();
     bindUIEvents();
     loadSymbolAndTimeframe(state.symbol, state.timeframe);
-    setInterval(refreshWatchlistAndTicker, 10000);
+    setInterval(refreshWatchlistAndTicker, 30000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshWatchlistAndTicker();
+    });
+    window.addEventListener('offline', () => {
+      setConnectionStatus('offline', 'OFFLINE', 'Browser ist offline');
+      showAppStatus('Keine Internetverbindung. Ältere Chartdaten können sichtbar bleiben, sind aber nicht mehr aktuell.', 'error');
+    });
+    window.addEventListener('online', () => {
+      showAppStatus('Internetverbindung wiederhergestellt. Marktdaten werden aktualisiert.', 'success', 3000);
+      loadSymbolAndTimeframe(state.symbol, state.timeframe);
+    });
   });
 })();

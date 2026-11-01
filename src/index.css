@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 67% 4%;
+    --foreground: 220 14% 84%;
+    --card: 220 50% 9%;
+    --card-foreground: 220 14% 90%;
+    --popover: 220 50% 9%;
+    --popover-foreground: 220 14% 90%;
+    --primary: 187 85% 53%;
+    --primary-foreground: 222 67% 4%;
+    --secondary: 219 43% 15%;
+    --secondary-foreground: 220 14% 90%;
+    --muted: 219 43% 13%;
+    --muted-foreground: 218 16% 64%;
+    --accent: 219 43% 16%;
+    --accent-foreground: 187 85% 65%;
+    --destructive: 0 91% 71%;
+    --destructive-foreground: 0 60% 7%;
+    --border: 222 43% 18%;
+    --input: 222 43% 22%;
+    --ring: 187 85% 53%;
+    --radius: 0.25rem;
+    --sidebar-background: 222 60% 5%;
+    --sidebar-foreground: 220 14% 84%;
+    --sidebar-primary: 187 85% 53%;
+    --sidebar-primary-foreground: 222 67% 4%;
+    --sidebar-accent: 219 43% 13%;
+    --sidebar-accent-foreground: 187 85% 65%;
+    --sidebar-border: 222 43% 18%;
+    --sidebar-ring: 187 85% 53%;
+    --mint: 160 84% 51%;
+  }
+
+  * { @apply border-border; }
+  html { color-scheme: dark; background: hsl(var(--background)); }
+  body {
+    @apply bg-background text-foreground;
+    min-width: 320px;
+    min-height: 100dvh;
+    margin: 0;
+    font-family: "Geist Mono Variable", ui-monospace, monospace;
+    font-size: 14px;
+    line-height: 1.55;
+    font-feature-settings: "onum" 1, "liga" 1;
+    background-image: radial-gradient(circle at 76% -10%, rgba(34, 211, 238, 0.055), transparent 32rem);
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    pointer-events: none;
+    opacity: 0.025;
+    background: repeating-linear-gradient(to bottom, transparent 0, transparent 2px, #a5f3fc 3px);
+  }
+  button, [role="button"], a, input, select { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background; }
+  button, [role="button"], a { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  input, textarea, select { font-size: 14px; }
+  ::selection { background: rgba(34, 211, 238, 0.25); color: #ecfeff; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: hsl(var(--background)); }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--border)); }
+}
+
+@layer components {
+  .font-display { font-family: "Space Grotesk Variable", "Geist Mono Variable", sans-serif; }
+  .terminal-label { @apply text-[10px] uppercase tracking-[0.14em] text-muted-foreground; }
+  .status-dot { @apply inline-block h-2 w-2 shrink-0 rounded-full bg-muted-foreground; }
+  .status-dot--live { background: hsl(var(--mint)); box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.08), 0 0 12px rgba(52, 211, 153, 0.4); animation: status-pulse 1.6s ease-in-out infinite; }
+  .text-mint { color: hsl(var(--mint)); }
+  .border-mint { border-color: hsl(var(--mint)); }
+  .bg-mint { background-color: hsl(var(--mint)); }
+  .status-badge { @apply inline-flex items-center border px-1.5 py-0.5 text-[10px] uppercase tracking-wider; }
+  .status-badge--open, .status-badge--filled { @apply border-cyan-400/30 bg-cyan-400/5 text-cyan-200; }
+  .status-badge--pending, .status-badge--accepted, .status-badge--closing { @apply border-amber-400/30 bg-amber-400/5 text-amber-200; }
+  .status-badge--closed { @apply border-border bg-secondary text-muted-foreground; }
+  .status-badge--error, .status-badge--rejected, .status-badge--cancelled { @apply border-red-400/30 bg-red-400/5 text-red-200; }
+  .data-table { @apply w-full min-w-full border-collapse text-left text-xs md:min-w-[880px]; }
+  .data-table th { @apply border-b border-border bg-background px-3 py-2.5 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground; }
+  .data-table td { @apply border-b border-border px-3 py-3 align-top last:border-r-0; }
+  .data-table tbody tr:last-child td { @apply border-b-0; }
+  .data-table tbody tr { @apply transition-colors hover:bg-cyan-400/[0.025]; }
+  .data-table td strong { @apply mb-1 block font-medium text-foreground; }
+  .data-table td span:not(.status-badge) { @apply block text-muted-foreground; }
+}
+
+@keyframes status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+}

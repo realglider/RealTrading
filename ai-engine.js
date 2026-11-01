@@ -652,23 +652,25 @@ window.AIEngine = (function () {
   /**
    * Generates BUY/SELL signals across the chart for the chosen strategy and backtests them
    */
-  function generateSignalsAndBacktest(candles, ind, strategyId = 'ensemble') {
+  function generateSignalsAndBacktest(candles, ind, strategyId = 'ensemble', options = {}) {
     const cfg = STRATEGIES[strategyId] || STRATEGIES.ensemble;
+    const feePct = Math.min(2, Math.max(0, Number(options.feePct) || 0));
+    const slippagePct = Math.min(2, Math.max(0, Number(options.slippagePct) || 0));
+    const maxBarsInTrade = Math.max(2, Math.min(200, Math.round(Number(options.maxBarsInTrade) || 50)));
+    const slippage = slippagePct / 100;
     const n = candles.length;
     const signals = [];
 
     const divMap = new Map();
-    for (const d of ind.rsiData.divergences) {
-      divMap.set(d.index, d);
-    }
+    for (const d of ind.rsiData.divergences) divMap.set(d.index, d);
 
     let lastSignalIdx = -999;
     let lastSignalSide = null;
 
-    for (let i = 36; i < n; i++) {
+    // A signal is evaluated at close i, but filled only at the next candle's open.
+    for (let i = 36; i < n - 1; i++) {
       const sc = scoreCandleForStrategy(i, candles, ind, divMap, strategyId);
       const barsSinceLast = i - lastSignalIdx;
-
       let chosenSide = null;
       let chosenScore = 0;
       let chosenReasons = [];
@@ -688,11 +690,16 @@ window.AIEngine = (function () {
       }
 
       if (chosenSide) {
-        const levels = buildTradeLevels(i, chosenSide, candles, ind.atr14, cfg);
+        const rawEntry = candles[i + 1].open;
+        const entry = rawEntry * (chosenSide === 'BUY' ? 1 + slippage : 1 - slippage);
+        const levels = buildTradeLevels(i, chosenSide, candles, ind.atr14, cfg, entry);
         signals.push({
           id: `sig-${strategyId}-${i}-${candles[i].time}`,
           index: i,
           time: candles[i].time,
+          entryIndex: i + 1,
+          entryTime: candles[i + 1].time,
+          rawEntry,
           side: chosenSide,
           score: chosenScore,
           reasons: chosenReasons.slice(0, 3),
@@ -703,136 +710,168 @@ window.AIEngine = (function () {
       }
     }
 
-    // Forward bar-by-bar backtest with explicit scale-outs.
-    // Model: 40% at TP1, 35% at TP2, 25% at TP3. After TP1,
-    // the remaining position is protected at break-even. If SL and a
-    // target are both inside the same candle, assume the adverse SL first.
-    const TP1_FRACTION = 0.40;
-    const TP2_FRACTION = 0.35;
-    const TP3_FRACTION = 0.25;
     let wins = 0;
     let losses = 0;
     let openCount = 0;
+    let skippedCount = 0;
     let grossProfitR = 0;
     let grossLossR = 0;
-    let totalPctGain = 0;
+    let netR = 0;
+    let lastExitIndex = -1;
 
-    for (let sIdx = 0; sIdx < signals.length; sIdx++) {
-      const sig = signals[sIdx];
-      const nextSigIndex = sIdx + 1 < signals.length ? signals[sIdx + 1].index : n - 1;
-      const maxCheckIdx = Math.min(n - 1, Math.max(nextSigIndex, sig.index + 50));
-      let remaining = 1;
-      let realizedR = 0;
+    const exitWithSlippage = (price, side) => price * (side === 'BUY' ? 1 - slippage : 1 + slippage);
+    const calculateResult = (sig, exitPrice) => {
+      const direction = sig.side === 'BUY' ? 1 : -1;
+      const grossR = ((exitPrice - sig.entry) * direction) / sig.riskAbs;
+      const feeR = ((feePct * 2) / 100) * (sig.entry / sig.riskAbs);
+      const rMultiple = grossR - feeR;
+      return {
+        rMultiple,
+        pnlPct: (((exitPrice - sig.entry) * direction) / sig.entry) * 100 - feePct * 2
+      };
+    };
+
+    for (const sig of signals) {
+      if (sig.entryIndex <= lastExitIndex) {
+        sig.status = 'SKIPPED';
+        sig.outcomeLabel = 'Übersprungen · Position aktiv';
+        skippedCount += 1;
+        continue;
+      }
+
+      const plannedLastIndex = Math.min(n - 1, sig.entryIndex + maxBarsInTrade - 1);
       let hitTP1 = false;
-      let hitTP2 = false;
-      let hitTP3 = false;
-      let hitSL = false;
-      let closed = false;
+      let exitIndex = null;
+      let exitPrice = null;
+      let exitReason = null;
 
-      for (let j = sig.index + 1; j <= maxCheckIdx && !closed; j++) {
+      for (let j = sig.entryIndex; j <= plannedLastIndex; j++) {
         const bar = candles[j];
         const activeSL = hitTP1 ? sig.entry : sig.sl;
-        const stopTouched = sig.side === 'BUY' ? bar.low <= activeSL : bar.high >= activeSL;
-        // Conservative intrabar ordering: stop is evaluated before targets.
-        if (stopTouched) {
-          if (!hitTP1) {
-            hitSL = true;
-            realizedR -= remaining;
-          }
-          // After TP1, the remainder exits at break-even.
-          remaining = 0;
-          closed = true;
+        const stopHit = sig.side === 'BUY' ? bar.low <= activeSL : bar.high >= activeSL;
+
+        // Conservative intrabar assumption: if SL and TP occur in one candle, SL comes first.
+        if (stopHit) {
+          const gapAdjusted = sig.side === 'BUY'
+            ? Math.min(activeSL, bar.open)
+            : Math.max(activeSL, bar.open);
+          exitPrice = exitWithSlippage(gapAdjusted, sig.side);
+          exitIndex = j;
+          exitReason = hitTP1 ? 'TP1 → Entry-Stop' : 'Stop-Loss';
           break;
         }
 
-        const tp1Touched = sig.side === 'BUY' ? bar.high >= sig.tp1 : bar.low <= sig.tp1;
-        const tp2Touched = sig.side === 'BUY' ? bar.high >= sig.tp2 : bar.low <= sig.tp2;
-        const tp3Touched = sig.side === 'BUY' ? bar.high >= sig.tp3 : bar.low <= sig.tp3;
+        const targets = [
+          { price: sig.tp3, reason: 'TP3' },
+          { price: sig.tp2, reason: 'TP2' }
+        ];
+        let targetHit = null;
+        for (const target of targets) {
+          const hit = sig.side === 'BUY' ? bar.high >= target.price : bar.low <= target.price;
+          if (hit) {
+            targetHit = target;
+            break;
+          }
+        }
+        if (targetHit) {
+          const gapAdjusted = sig.side === 'BUY'
+            ? Math.max(targetHit.price, bar.open)
+            : Math.min(targetHit.price, bar.open);
+          exitPrice = exitWithSlippage(gapAdjusted, sig.side);
+          exitIndex = j;
+          exitReason = targetHit.reason;
+          break;
+        }
 
-        if (!hitTP1 && tp1Touched) {
-          realizedR += TP1_FRACTION * cfg.tp1R;
-          remaining -= TP1_FRACTION;
-          hitTP1 = true;
-        }
-        if (!hitTP2 && tp2Touched) {
-          realizedR += TP2_FRACTION * cfg.tp2R;
-          remaining -= TP2_FRACTION;
-          hitTP2 = true;
-        }
-        if (!hitTP3 && tp3Touched) {
-          realizedR += TP3_FRACTION * cfg.tp3R;
-          remaining -= TP3_FRACTION;
-          hitTP3 = true;
-          closed = true;
-        }
-        if (remaining <= 1e-9) closed = true;
+        const tp1Hit = sig.side === 'BUY' ? bar.high >= sig.tp1 : bar.low <= sig.tp1;
+        if (tp1Hit) hitTP1 = true;
       }
 
-      if (!closed && remaining > 0) {
-        const lastClose = candles[maxCheckIdx].close;
-        const rawDiff = sig.side === 'BUY' ? lastClose - sig.entry : sig.entry - lastClose;
-        const floatingR = (rawDiff / sig.riskAbs) * remaining;
-        realizedR += floatingR;
+      if (exitIndex === null && plannedLastIndex < sig.entryIndex + maxBarsInTrade - 1) {
+        const markPrice = exitWithSlippage(candles[n - 1].close, sig.side);
+        const result = calculateResult(sig, markPrice);
         sig.status = 'OPEN';
-        sig.outcomeLabel = `⏳ Offen (${realizedR >= 0 ? '+' : ''}${realizedR.toFixed(2)}R)`;
-        openCount++;
-      } else {
-        sig.status = realizedR > 0 ? 'WIN' : 'LOSS';
-        sig.outcomeLabel = hitTP3 ? '✅ TP3 erreicht (Teilverkauf)' : hitTP2 ? '✅ TP2 erreicht (Teilverkauf)' : hitTP1 ? (hitSL ? '⚖️ TP1, Rest Break-even' : '✅ TP1 erreicht (Teilverkauf)') : '❌ SL ausgelöst';
-        if (realizedR > 0) wins++;
-        else losses++;
+        sig.rMultiple = result.rMultiple;
+        sig.pnlPct = result.pnlPct;
+        sig.outcomeLabel = `Offen · ${result.rMultiple >= 0 ? '+' : ''}${result.rMultiple.toFixed(2)}R`;
+        openCount += 1;
+        lastExitIndex = n - 1;
+        continue;
       }
 
-      sig.rMultiple = realizedR;
-      sig.pnlPct = sig.riskPct * realizedR;
-      if (realizedR > 0) grossProfitR += realizedR;
-      else if (realizedR < 0) grossLossR += Math.abs(realizedR);
-      totalPctGain += sig.pnlPct;
+      if (exitIndex === null) {
+        exitIndex = plannedLastIndex;
+        exitPrice = exitWithSlippage(candles[plannedLastIndex].close, sig.side);
+        exitReason = 'Zeitexit';
+      }
+
+      const result = calculateResult(sig, exitPrice);
+      sig.exitIndex = exitIndex;
+      sig.exitTime = candles[exitIndex].time;
+      sig.exitPrice = exitPrice;
+      sig.exitReason = exitReason;
+      sig.rMultiple = result.rMultiple;
+      sig.pnlPct = result.pnlPct;
+      sig.status = result.rMultiple > 0 ? 'WIN' : 'LOSS';
+      sig.outcomeLabel = `${exitReason} · ${result.rMultiple >= 0 ? '+' : ''}${result.rMultiple.toFixed(2)}R`;
+
+      if (result.rMultiple > 0) {
+        wins += 1;
+        grossProfitR += result.rMultiple;
+      } else {
+        losses += 1;
+        grossLossR += Math.abs(result.rMultiple);
+      }
+      netR += result.rMultiple;
+      lastExitIndex = exitIndex;
     }
 
     const closedTrades = wins + losses;
+    const testedTrades = closedTrades + openCount;
     const winRate = closedTrades > 0 ? (wins / closedTrades) * 100 : 0;
-    const profitFactor =
-      grossLossR > 0 ? grossProfitR / grossLossR : grossProfitR > 0 ? 9.99 : 0;
+    const profitFactor = grossLossR > 0
+      ? grossProfitR / grossLossR
+      : grossProfitR > 0
+      ? Infinity
+      : null;
 
     return {
       strategy: cfg,
       signals,
+      assumptions: { feePct, slippagePct, maxBarsInTrade },
       stats: {
         totalSignals: signals.length,
+        testedTrades,
+        skippedCount,
         closedTrades,
         wins,
         losses,
         openCount,
         winRate,
         profitFactor,
-        totalPctGain,
-        netR: grossProfitR - grossLossR
+        netR,
+        expectancyR: closedTrades > 0 ? netR / closedTrades : 0
       }
     };
   }
 
-  /**
-   * Runs all 8 strategies on the current chart and ranks them by performance
-   */
-  function compareAllStrategies(candles, ind) {
+  /** Runs all strategies with identical costs and execution assumptions. */
+  function compareAllStrategies(candles, ind, options = {}) {
     const results = [];
     for (const key of Object.keys(STRATEGIES)) {
-      const res = generateSignalsAndBacktest(candles, ind, key);
-      // Reliability-adjusted comparison: low sample sizes are deliberately
-      // discounted so a handful of lucky trades cannot dominate the ranking.
-      const sampleConfidence = Math.min(1, res.stats.closedTrades / 30);
-      const baseScore =
-        res.stats.winRate * 0.35 +
-        Math.min(res.stats.profitFactor, 4) * 10 +
-        Math.max(-20, Math.min(20, res.stats.netR)) * 1.5;
-      const rankScore = res.stats.closedTrades >= 5 ? baseScore * sampleConfidence : -1000 + res.stats.closedTrades;
+      const res = generateSignalsAndBacktest(candles, ind, key, options);
+      const stats = res.stats;
+      const pf = stats.profitFactor === Infinity ? 6 : stats.profitFactor ?? 0;
+      const shrunkWinRate = ((stats.wins + 2) / (stats.closedTrades + 4)) * 100;
+      const rankScore = stats.closedTrades === 0
+        ? -Infinity
+        : shrunkWinRate * 0.45 + Math.min(pf, 6) * 6 + stats.netR * 1.5 + Math.min(stats.closedTrades, 30) * 0.4;
       results.push({
         id: key,
         name: STRATEGIES[key].name,
         shortName: STRATEGIES[key].shortName,
         description: STRATEGIES[key].description,
-        stats: res.stats,
+        stats,
         rankScore
       });
     }
