@@ -1,0 +1,29 @@
+name: Deploy RealTrading to Oracle VM
+
+on:
+  push:
+    branches:
+      - restore-kimi-trading-app
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: realtrading-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # This runner lives on the Oracle VM and checks in to GitHub over outbound HTTPS.
+    # Intentionally do not add pull_request triggers for the self-hosted production runner.
+    runs-on: [self-hosted, Linux, ARM64, realtrading-oracle]
+    timeout-minutes: 45
+    steps:
+      - name: Check out the trusted deployment branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build, restart, and verify the service
+        run: bash scripts/deploy-oracle.sh
