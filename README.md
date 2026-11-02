@@ -15,3 +15,5 @@ The admin login is provisioned from environment variables; the app has no public
 ## Production hosting
 
 Run the included Docker image on a host that keeps a Node process running continuously. The bot scheduler runs in that process and is not suitable for a static-only or short-lived serverless deployment. Configure the required environment variables on the host; never commit `.env` or exchange credentials.
+
+For the Oracle VM deployment, keep the production environment file outside the application checkout at `/home/opc/.config/realtrading/realtrading.env` (directory mode `700`, file mode `600`). The systemd user service reads that file with Podman's `--env-file`; code uploads and image rebuilds in `/home/opc/realtrading` must not replace it. `.env` files are excluded from the Docker build context as well as Git, so secrets are not copied into container images.
