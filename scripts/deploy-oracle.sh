@@ -8,9 +8,9 @@ umask 077
 
 service_file="/home/opc/.config/systemd/user/realtrading.service"
 env_file="/home/opc/.config/realtrading/realtrading.env"
-new_image="localhost/realtrading:${GITHUB_SHA}"
+new_image="localhost/realtrading:candidate-${GITHUB_SHA}"
 production_image="localhost/realtrading:production"
-backup_image="localhost/realtrading:rollback-${GITHUB_RUN_ID}"
+backup_image="localhost/realtrading:rollback"
 runtime_dir="/run/user/$(id -u)"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$runtime_dir}"
 
@@ -45,6 +45,7 @@ rollback() {
 trap rollback ERR
 
 if [[ -n "$current_image" ]] && podman image exists "$current_image"; then
+  podman image rm "$backup_image" >/dev/null 2>&1 || true
   podman tag "$current_image" "$backup_image"
   backup_created=1
 fi
@@ -66,6 +67,7 @@ systemctl --user is-active --quiet realtrading.service
 for attempt in $(seq 1 30); do
   if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:3000/ >/dev/null; then
     echo "Deployment healthy: $GITHUB_SHA"
+    podman image rm "$new_image" >/dev/null
     unit_changed=0
     rm -f "$unit_backup"
     trap - ERR
