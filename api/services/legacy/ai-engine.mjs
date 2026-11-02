@@ -109,6 +109,18 @@ window.AIEngine = (function () {
       tp1R: 1.5,
       tp2R: 2.6,
       tp3R: 4.0
+    },
+    donchian_trend: {
+      id: 'donchian_trend',
+      name: '🧭 Donchian Trendfolge (55-Kanal + EMA-Regime)',
+      shortName: 'Donchian Trendfolge',
+      description: 'Bestätigter 55-Kerzen-Kanalausbruch nur im steigenden/fallenden EMA-Regime; ATR-Stop, Kostenfilter und OOS-Freigabe bleiben verpflichtend.',
+      minScore: 76,
+      minBarsBetweenSignals: 20,
+      slAtrMult: 2.0,
+      tp1R: 1.25,
+      tp2R: 2.75,
+      tp3R: 4.0
     }
   };
 
@@ -498,6 +510,36 @@ window.AIEngine = (function () {
 
       if (macd > macdSig && hist > histPrev) bullPoints += 10;
       if (macd < macdSig && hist < histPrev) bearPoints += 10;
+    }
+
+    // =========================================================================
+    // STRATEGY 8: DONCHIAN TIME-SERIES TREND FOLLOWING
+    // The prior channel excludes the signal candle to avoid look-ahead bias.
+    // =========================================================================
+    else if (strategyId === 'donchian_trend') {
+      const channelLength = 55;
+      const slopeLength = 20;
+      if (i >= channelLength && e50 !== null && e200 !== null) {
+        const priorE200 = ind.ema200[i - slopeLength];
+        if (priorE200 !== null && priorE200 !== undefined) {
+          let priorHigh = -Infinity;
+          let priorLow = Infinity;
+          for (let k = i - channelLength; k < i; k += 1) {
+            priorHigh = Math.max(priorHigh, candles[k].high);
+            priorLow = Math.min(priorLow, candles[k].low);
+          }
+          const trendUp = e50 > e200 && e200 > priorE200;
+          const trendDown = e50 < e200 && e200 < priorE200;
+          if (trendUp && isBullCandle && c.close > priorHigh + atr * 0.05) {
+            bullPoints += 82;
+            bullReasons.push(`55-Kerzen-Ausbruch über ${formatPrice(priorHigh)} im steigenden EMA-Regime`);
+          }
+          if (trendDown && isBearCandle && c.close < priorLow - atr * 0.05) {
+            bearPoints += 82;
+            bearReasons.push(`55-Kerzen-Ausbruch unter ${formatPrice(priorLow)} im fallenden EMA-Regime`);
+          }
+        }
+      }
     }
 
     // =========================================================================
