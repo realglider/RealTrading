@@ -293,8 +293,10 @@ export async function placeMarketOrder(input: {
   funds?: string;
   leverage?: number;
   reduceOnly?: boolean;
+  stopPrice?: string;
+  targetPrice?: string;
 }) {
-  const { market, symbol, side, credentials, clientOid, quantity, funds, leverage, reduceOnly } = input;
+  const { market, symbol, side, credentials, clientOid, quantity, funds, leverage, reduceOnly, stopPrice, targetPrice } = input;
   if (market === "spot") {
     const body: Record<string, unknown> = {
       clientOid,
@@ -314,24 +316,48 @@ export async function placeMarketOrder(input: {
   if (!Number.isInteger(contracts) || contracts < 1) {
     throw new Error("Futures-Order benötigt eine positive ganze Kontraktanzahl");
   }
+  const futuresBody: Record<string, unknown> = {
+    clientOid,
+    symbol,
+    side,
+    type: "market",
+    size: contracts,
+    leverage: String(leverage || 1),
+    marginMode: "ISOLATED",
+    positionSide: "BOTH",
+    reduceOnly: Boolean(reduceOnly),
+    remark: "wf-bot",
+  };
+  if (!reduceOnly && stopPrice && targetPrice) {
+    const isLong = side === "buy";
+    futuresBody.stopPriceType = "MP";
+    futuresBody.triggerStopUpPrice = isLong ? targetPrice : stopPrice;
+    futuresBody.triggerStopDownPrice = isLong ? stopPrice : targetPrice;
+  }
   return privateRequest<{ orderId: string }>(
     "futures",
     "POST",
-    "/api/v1/orders",
+    !reduceOnly && stopPrice && targetPrice ? "/api/v1/st-orders" : "/api/v1/orders",
     credentials,
-    {
-      clientOid,
-      symbol,
-      side,
-      type: "market",
-      size: contracts,
-      leverage: String(leverage || 1),
-      marginMode: "ISOLATED",
-      positionSide: "BOTH",
-      reduceOnly: Boolean(reduceOnly),
-      remark: "wf-bot",
-    },
+    futuresBody,
   );
+}
+
+export async function hasOpenFuturesPosition(symbol: string, credentials: KucoinCredentials) {
+  const data = await privateRequest<{
+    symbol?: string;
+    currentQty?: number | string;
+    isOpen?: boolean;
+  } | Array<{ symbol?: string; currentQty?: number | string; isOpen?: boolean }>>(
+    "futures",
+    "GET",
+    `/api/v2/position?symbol=${encodeURIComponent(symbol)}`,
+    credentials,
+  );
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  const position = rows.find((row) => !row.symbol || row.symbol === symbol);
+  if (!position) return false;
+  return typeof position.isOpen === "boolean" ? position.isOpen : Number(position.currentQty ?? 0) !== 0;
 }
 
 export type OrderFill = {

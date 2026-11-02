@@ -21,6 +21,7 @@ import {
   getInstrumentRules,
   getKlines,
   getOrderFill,
+  hasOpenFuturesPosition,
   isClosedCandle,
   placeMarketOrder,
   testCredentials,
@@ -136,6 +137,7 @@ function toPositionDto(row: Position): PositionDto {
     entryPrice: row.entryPrice,
     stopPrice: row.stopPrice,
     targetPrice: row.targetPrice,
+    exchangeProtectionActive: row.exchangeProtectionActive,
     status: row.status,
     realizedPnl: row.realizedPnl,
     openedAt: row.openedAt.toISOString(),
@@ -481,6 +483,7 @@ async function reconcilePositions(userId: number, market: Market, credentials: K
         entryPrice: String(fillPrice),
         quantity: fill.quantity === null ? position.quantity : String(fill.quantity),
         exchangeOrderId: order.exchangeOrderId,
+        exchangeProtectionActive: market === "futures",
       }).where(eq(positions.id, position.id));
     } else {
       const rules = await getInstrumentRules(market, position.symbol);
@@ -492,7 +495,7 @@ async function reconcilePositions(userId: number, market: Market, credentials: K
         exitPrice: fillPrice,
         multiplier: rules.multiplier,
       });
-      await db.update(positions).set({ status: "closed", realizedPnl: String(pnl), closedAt: new Date() }).where(eq(positions.id, position.id));
+      await db.update(positions).set({ status: "closed", realizedPnl: String(pnl), exchangeProtectionActive: false, closedAt: new Date() }).where(eq(positions.id, position.id));
     }
     await db.update(orders).set({ status: "filled", responseText: JSON.stringify(fill.raw).slice(0, 2000) }).where(eq(orders.id, order.id));
     await recordEvent(userId, market, "success", `${position.status === "pending" ? "Einstieg" : "Ausstieg"} für ${position.symbol} bestätigt.`);
@@ -548,7 +551,7 @@ async function closePosition(
         exitPrice,
         multiplier: rules.multiplier,
       });
-      await db.update(positions).set({ status: "closed", realizedPnl: String(pnl), closedAt: new Date() }).where(eq(positions.id, fresh.id));
+      await db.update(positions).set({ status: "closed", realizedPnl: String(pnl), exchangeProtectionActive: false, closedAt: new Date() }).where(eq(positions.id, fresh.id));
       await db.update(orders).set({ status: "filled", responseText: JSON.stringify(fill.raw).slice(0, 2000) }).where(eq(orders.id, order.id));
       await recordEvent(userId, fresh.market, pnl >= 0 ? "success" : "warn", `${fresh.symbol}: ${reason}; geschätzter PnL ${pnl.toFixed(2)} USDT.`);
     } else if (fill.status === "cancelled") {
@@ -576,6 +579,21 @@ async function monitorOpenPositions(userId: number, market: Market, timeframe: T
   ));
   let acted = false;
   for (const position of open) {
+    if (market === "futures" && position.exchangeProtectionActive) {
+      if (!(await hasOpenFuturesPosition(position.symbol, credentials))) {
+        await getDb().update(positions).set({ status: "closed", realizedPnl: null, exchangeProtectionActive: false, closedAt: new Date() }).where(eq(positions.id, position.id));
+        await getDb().update(botSettings).set({ liveEnabled: false }).where(and(eq(botSettings.userId, userId), eq(botSettings.market, market)));
+        await recordEvent(userId, market, "warn", `${position.symbol}: KuCoin-Position geschlossen; realisierten PnL bitte im KuCoin-Konto prüfen, bevor erneut armiert wird.`);
+        acted = true;
+        continue;
+      }
+      if (Date.now() - position.openedAt.getTime() >= 50 * timeframeSeconds(timeframe) * 1000) {
+        const candles = await getKlines(market, position.symbol, timeframe, 2);
+        const current = candles[candles.length - 1];
+        if (current) acted = await closePosition(userId, position, credentials, current.close, "Zeitexit") || acted;
+      }
+      continue;
+    }
     const candles = await getKlines(market, position.symbol, timeframe, 80);
     const current = candles[candles.length - 1];
     if (!current) continue;
@@ -684,6 +702,8 @@ async function enterPosition(
       clientOid,
       quantity: size.quantityText,
       leverage: settings.leverage,
+      stopPrice: market === "futures" ? String(signal.stopPrice) : undefined,
+      targetPrice: market === "futures" ? String(signal.targetPrice) : undefined,
     });
     await db.update(orders).set({ exchangeOrderId: response.orderId, responseText: JSON.stringify(response).slice(0, 2000) }).where(eq(orders.clientOid, clientOid));
     const fill = await waitForFill(market, response.orderId, credentials);
@@ -693,9 +713,11 @@ async function enterPosition(
         entryPrice: String(fill.averagePrice ?? signal.entryPrice),
         quantity: fill.quantity === null ? size.quantityText : String(fill.quantity),
         exchangeOrderId: response.orderId,
+        exchangeProtectionActive: market === "futures",
       }).where(eq(positions.id, positionId));
       await db.update(orders).set({ status: "filled", responseText: JSON.stringify(fill.raw).slice(0, 2000) }).where(eq(orders.clientOid, clientOid));
       await recordEvent(userId, market, "success", `${settings.symbol}: ${signal.side.toUpperCase()} ${size.quantityText}, ${validation.strategyId}; Volatilitätsfaktor ${signal.execution.volatilityScale.toFixed(2)}; Fill bestätigt.`);
+      if (market === "futures") await recordEvent(userId, market, "success", `${settings.symbol}: Stop-Loss und Take-Profit mit Mark-Preis-Trigger an die KuCoin-Futures-Einstiegsorder angehängt.`);
     } else if (fill.status === "cancelled") {
       await db.update(positions).set({ status: "error" }).where(eq(positions.id, positionId));
       await db.update(orders).set({ status: "cancelled" }).where(eq(orders.clientOid, clientOid));

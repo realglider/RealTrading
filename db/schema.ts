@@ -94,6 +94,7 @@ export const positions = mysqlTable(
     entryPrice: money("entryPrice"),
     stopPrice: money("stopPrice"),
     targetPrice: money("targetPrice"),
+    exchangeProtectionActive: boolean("exchangeProtectionActive").notNull().default(false),
     status: mysqlEnum("status", ["pending", "open", "closing", "closed", "error"]).notNull().default("pending"),
     realizedPnl: decimal("realizedPnl", { precision: 38, scale: 18 }),
     exchangeOrderId: varchar("exchangeOrderId", { length: 96 }),
@@ -191,4 +192,3 @@ export type BotSettings = typeof botSettings.$inferSelect;
 export type ApiCredentials = typeof apiCredentials.$inferSelect;
 export type Position = typeof positions.$inferSelect;
 export type ValidationRun = typeof validationRuns.$inferSelect;
-

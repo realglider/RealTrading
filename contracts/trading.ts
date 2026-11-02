@@ -137,6 +137,7 @@ export type PositionDto = {
   entryPrice: string;
   stopPrice: string;
   targetPrice: string;
+  exchangeProtectionActive: boolean;
   status: string;
   realizedPnl: string | null;
   openedAt: string;
@@ -148,7 +149,7 @@ export type OrderDto = {
   market: Market;
   symbol: string;
   side: "buy" | "sell";
-  purpose: "entry" | "exit" | "test";
+  purpose: "entry" | "exit" | "protection" | "test";
   strategyId: string;
   clientOid: string;
   exchangeOrderId: string | null;
