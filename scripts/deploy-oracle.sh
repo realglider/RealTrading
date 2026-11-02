@@ -86,11 +86,11 @@ podman build --pull=always --tag "$new_image" "$GITHUB_WORKSPACE"
 podman tag "$new_image" "$production_image"
 
 sed -i -E 's#localhost/realtrading:[^[:space:]]+#localhost/realtrading:production#' "$service_file"
+unit_changed=1
 grep -Fq "$production_image" "$service_file" || {
   echo "Could not update the service image reference." >&2
   exit 1
 }
-unit_changed=1
 
 systemctl --user daemon-reload
 systemctl --user restart realtrading.service
