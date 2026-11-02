@@ -769,9 +769,8 @@ export async function runMarketForUser(userId: number, market: Market) {
     if (!validation || Date.now() - validation.createdAt.getTime() > VALIDATION_MAX_AGE_MS) {
       const recommendation = await runValidation(userId, market);
       if (recommendation.symbol !== settings.symbol || recommendation.timeframe !== settings.timeframe) {
-        await getDb().update(botSettings).set({ liveEnabled: false }).where(eq(botSettings.id, settings.id));
-        await recordEvent(userId, market, "warn", `Live-Modus deaktiviert: Neue Empfehlung ${recommendation.symbol} / ${recommendation.timeframe ?? "keine"} weicht von der Konfiguration ab. Keine automatische Live-Umstellung.`);
-        return "Neue Coin-/Timeframe-Empfehlung erfordert manuelle Übernahme";
+        await recordEvent(userId, market, "warn", `Entry pausiert: Neue Empfehlung ${recommendation.symbol} / ${recommendation.timeframe ?? "keine"} weicht von der Konfiguration ${settings.symbol} / ${settings.timeframe} ab. Live-Freigabe bleibt aktiv; keine automatische Umstellung.`);
+        return "Entry pausiert; Live-Freigabe bleibt aktiv, bis eine passende Freigabe vorliegt";
       }
       validation = await latestValidation(userId, market, settings.symbol, settings.timeframe as Timeframe);
       if (!validation || Date.now() - validation.createdAt.getTime() > VALIDATION_MAX_AGE_MS) {
@@ -849,3 +848,4 @@ export function startScheduler() {
   const initial = setTimeout(() => { void tick(); }, 10_000);
   initial.unref();
 }
+
