@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/sidebar";
 import { LOGIN_PATH } from "@/const";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { Bot, ChartCandlestick, LogOut, PanelLeft } from "lucide-react";
+import { Bot, ChartCandlestick, LogOut, PanelLeft, Settings2 } from "lucide-react";
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { AuthLayoutSkeleton } from "./AuthLayoutSkeleton";
@@ -111,9 +111,12 @@ function AuthLayoutContent({
   const navigate = useNavigate();
   const { state, toggleSidebar } = useSidebar();
   const isCollapsed = state === "collapsed";
+  const visibleMenuItems = user?.role === "admin"
+    ? [...menuItems, { icon: Settings2, label: "E-Mail-Reset einrichten", path: "/admin/email-settings" }]
+    : menuItems;
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const activeMenuItem = menuItems.find(item => item.path === location.pathname);
+  const activeMenuItem = visibleMenuItems.find(item => item.path === location.pathname);
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -181,7 +184,7 @@ function AuthLayoutContent({
 
           <SidebarContent className="gap-0">
             <SidebarMenu className="px-2 py-1">
-              {menuItems.map(item => {
+              {visibleMenuItems.map(item => {
                 const isActive = location.pathname === item.path;
                 return (
                   <SidebarMenuItem key={item.path}>
@@ -262,3 +265,4 @@ function AuthLayoutContent({
     </>
   );
 }
+

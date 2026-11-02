@@ -34,6 +34,15 @@ export const users = mysqlTable("users", {
   lastSignInAt: timestamp("lastSignInAt").defaultNow().notNull(),
 });
 
+export const mailSettings = mysqlTable("mail_settings", {
+  id: int("id").primaryKey(),
+  host: varchar("host", { length: 255 }).notNull(),
+  port: int("port").notNull(),
+  user: varchar("user", { length: 320 }).notNull(),
+  encryptedAppPassword: text("encryptedAppPassword").notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
+});
+
 export const botSettings = mysqlTable(
   "bot_settings",
   {
@@ -182,3 +191,4 @@ export type BotSettings = typeof botSettings.$inferSelect;
 export type ApiCredentials = typeof apiCredentials.$inferSelect;
 export type Position = typeof positions.$inferSelect;
 export type ValidationRun = typeof validationRuns.$inferSelect;
+

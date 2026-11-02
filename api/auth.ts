@@ -8,24 +8,13 @@ import { Errors } from "@contracts/errors";
 import { env } from "./lib/env";
 import { getSessionCookieOptions } from "./lib/cookies";
 import { clearPasswordReset, consumePasswordReset, createUser, findUserByEmail, findUserByUnionId, savePasswordReset, updateLastSignIn, upsertUser } from "./queries/users";
+import { getMailSettings } from "./queries/mailSettings";
 import { signSessionToken, verifySessionToken } from "./kimi/session";
 
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 const registrationAttempts = new Map<string, { count: number; resetAt: number }>();
 const resetAttempts = new Map<string, { count: number; resetAt: number }>();
 const passwordResetAttempts = new Map<string, { count: number; resetAt: number }>();
-const resetMailer = nodemailer.createTransport({
-  host: env.smtpHost || "smtp.gmail.com",
-  port: env.smtpPort,
-  secure: env.smtpPort === 465,
-  auth: env.smtpUser && env.smtpAppPassword
-    ? { user: env.smtpUser, pass: env.smtpAppPassword.replace(/\s/g, "") }
-    : undefined,
-  connectionTimeout: 10_000,
-  greetingTimeout: 10_000,
-  socketTimeout: 15_000,
-});
-
 function validPassword(password: string) {
   const [scheme, saltHex, expectedHex] = env.adminPasswordHash.split("$");
   if (scheme !== "scrypt" || !/^[a-f\d]{32,128}$/i.test(saltHex ?? "") || !/^[a-f\d]{64,128}$/i.test(expectedHex ?? "")) return false;
@@ -169,7 +158,12 @@ export async function forgotPassword(c: Context) {
   if (hitLimit(resetAttempts, ip, 3, 60 * 60_000)) {
     return c.json({ error: "Zu viele Anfragen. Bitte später erneut versuchen." }, 429);
   }
-  if (!env.smtpUser || !env.smtpAppPassword || !env.publicAppUrl.startsWith("https://")) {
+  const mailSettings = await getMailSettings().catch(() => null);
+  const smtpUser = mailSettings?.user || env.smtpUser;
+  const smtpPassword = mailSettings?.appPassword || env.smtpAppPassword;
+  const smtpHost = mailSettings?.host || env.smtpHost || "smtp.gmail.com";
+  const smtpPort = mailSettings?.port || env.smtpPort;
+  if (!smtpUser || !smtpPassword || !env.publicAppUrl.startsWith("https://")) {
     return c.json({ error: "Passwort-Zurücksetzen ist noch nicht eingerichtet. Bitte den Administrator kontaktieren." }, 503);
   }
 
@@ -200,8 +194,17 @@ export async function forgotPassword(c: Context) {
     await savePasswordReset(user.id, tokenHash, expiresAt);
     const link = `${env.publicAppUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
     try {
+      const resetMailer = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: { user: smtpUser, pass: smtpPassword.replace(/\s/g, "") },
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 15_000,
+      });
       await resetMailer.sendMail({
-        from: `RealTrading <${env.smtpUser}>`,
+        from: `RealTrading <${smtpUser}>`,
         to: user.email ?? email,
         subject: "RealTrading Passwort zurücksetzen",
         text: `Über diesen Link kannst du dein RealTrading-Passwort zurücksetzen. Der Link ist 30 Minuten gültig:\n\n${link}\n\nWenn du das nicht angefordert hast, kannst du diese E-Mail ignorieren.`,
