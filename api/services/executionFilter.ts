@@ -101,6 +101,12 @@ export function evaluateEntryGate(input: {
     if (side === "SELL" && regime !== "trend_down") reasons.push("EMA Golden Pullback: kein bestätigtes Abwärtsregime");
   }
 
+  if (strategyId === "donchian_trend") {
+    if (regime === "transition") reasons.push("Donchian Trendfolge: Trendregime nicht bestätigt");
+    if (side === "BUY" && regime !== "trend_up") reasons.push("Donchian Trendfolge: Long-Ausbruch gegen das EMA-Regime");
+    if (side === "SELL" && regime !== "trend_down") reasons.push("Donchian Trendfolge: Short-Ausbruch gegen das EMA-Regime");
+  }
+
   return {
     allowed: reasons.length === 0,
     reasons,
