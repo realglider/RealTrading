@@ -21,6 +21,28 @@ grep -Fq -- "--env-file $env_file" "$service_file" || {
   exit 1
 }
 
+podman exec realtrading node -e '
+const mysql = require("mysql2/promise");
+(async () => {
+  const connection = await mysql.createConnection(process.env.DATABASE_URL);
+  const [rows] = await connection.query(
+    "SELECT (SELECT COUNT(*) FROM bot_settings WHERE liveEnabled = 1) AS liveMarkets, " +
+    "(SELECT COUNT(*) FROM positions WHERE status IN (\x27pending\x27, \x27open\x27, \x27closing\x27)) AS activePositions"
+  );
+  await connection.end();
+  const state = rows[0];
+  console.log("Deployment preflight — live markets:", Number(state.liveMarkets),
+    "active positions:", Number(state.activePositions));
+  if (Number(state.liveMarkets) > 0 || Number(state.activePositions) > 0) {
+    console.error("Refusing to restart RealTrading while live trading is armed or a position is active.");
+    process.exit(2);
+  }
+})().catch((error) => {
+  console.error("Could not verify trading state; refusing deployment:", error.message);
+  process.exit(3);
+});
+'
+
 current_image="$(grep -oE 'localhost/realtrading:[^[:space:]]+' "$service_file" | head -n 1 || true)"
 unit_backup="$(mktemp)"
 cp -p "$service_file" "$unit_backup"
