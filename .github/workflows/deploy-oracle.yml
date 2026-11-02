@@ -17,7 +17,7 @@ jobs:
   deploy:
     # This runner lives on the Oracle VM and checks in to GitHub over outbound HTTPS.
     # Intentionally do not add pull_request triggers for the self-hosted production runner.
-    runs-on: [self-hosted, Linux, ARM64, realtrading-oracle]
+    runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 45
     steps:
       - name: Check out the trusted deployment branch
