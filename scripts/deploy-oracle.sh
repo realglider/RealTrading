@@ -27,7 +27,8 @@ const mysql = require("mysql2/promise");
   const connection = await mysql.createConnection(process.env.DATABASE_URL);
   const [rows] = await connection.query(
     "SELECT (SELECT COUNT(*) FROM bot_settings WHERE liveEnabled = 1) AS liveMarkets, " +
-    "(SELECT COUNT(*) FROM positions WHERE status IN (\x27pending\x27, \x27open\x27, \x27closing\x27)) AS activePositions"
+    "(SELECT COUNT(*) FROM positions WHERE status IN (?, ?, ?)) AS activePositions",
+    ["pending", "open", "closing"]
   );
   await connection.end();
   const state = rows[0];
