@@ -33,6 +33,7 @@ export const STRATEGIES = [
   { id: "trend_pullback", name: "EMA Golden Pullback" },
   { id: "divergence_sniper", name: "RSI/MACD Divergenz" },
   { id: "squeeze_breakout", name: "Volatility Squeeze" },
+  { id: "donchian_trend", name: "Donchian Trendfolge" },
 ] as const;
 
 export type BotSettingsDto = {
