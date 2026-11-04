@@ -199,8 +199,12 @@ export async function getKlines(
   const byTime = new Map<number, Candle>();
   let endSeconds = Math.floor(Date.now() / 1000);
 
-  for (let page = 0; page < 4 && byTime.size < target; page += 1) {
-    const batchSize = Math.min(500, target - byTime.size + 1);
+  const maxCandlesPerRequest = market === "futures" ? 200 : 500;
+  for (let page = 0; page < 6 && byTime.size < target; page += 1) {
+    // KuCoin Futures returns at most 200 candles per request. Keep each
+    // requested range within that limit so the newest candles are not silently
+    // truncated before we page backwards for older history.
+    const batchSize = Math.min(maxCandlesPerRequest, target - byTime.size + 1);
     const startSeconds = endSeconds - batchSize * seconds;
     const endpoint = market === "spot"
       ? `/api/v1/market/candles?symbol=${encodeURIComponent(symbol)}&type=${SPOT_INTERVAL[timeframe]}&startAt=${startSeconds}&endAt=${endSeconds}`

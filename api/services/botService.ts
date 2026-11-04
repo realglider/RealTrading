@@ -31,7 +31,7 @@ import {
 import { calculatePositionSize, estimateRealizedPnl } from "./risk";
 import { selectCoinRecommendation, selectTimeframeRecommendation } from "./recommendation";
 import { coinUniverse, preferredValidationSymbols, rankCoinMarketData } from "./marketResearch";
-import { getLatestActionableSignal, runWalkForward } from "./strategyEngine";
+import { evaluateLatestActionableSignal, runWalkForward } from "./strategyEngine";
 
 const VALIDATION_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const runningMarkets = new Set<string>();
@@ -639,8 +639,23 @@ async function enterPosition(
   const market = settings.market;
   const timeframe = settings.timeframe as Timeframe;
   const candles = await getKlines(market, settings.symbol, timeframe, 260);
-  const signal = getLatestActionableSignal({ candles, strategyId: validation.strategyId, market, timeframe });
-  if (!signal) return;
+  const evaluation = evaluateLatestActionableSignal({ candles, strategyId: validation.strategyId, market, timeframe });
+  const signal = evaluation.signal;
+  if (!signal) {
+    if (evaluation.candleTime !== null) {
+      const candleStart = new Date(evaluation.candleTime * 1000);
+      const marker = `Signalprüfung ${settings.symbol}/${timeframe} (${candleStart.toISOString()})`;
+      const priorEvents = await getDb().select({ message: botEvents.message }).from(botEvents).where(and(
+        eq(botEvents.userId, userId),
+        eq(botEvents.market, market),
+        gte(botEvents.createdAt, candleStart),
+      )).orderBy(desc(botEvents.createdAt)).limit(30);
+      if (!priorEvents.some((event) => event.message.startsWith(marker))) {
+        await recordEvent(userId, market, "info", `${marker}: kein Einstieg — ${evaluation.reason}`);
+      }
+    }
+    return;
+  }
   const clientOid = `wf-${userId}-${market}-${signal.clientOidSeed}`;
   const duplicate = await getDb().query.orders.findFirst({ where: eq(orders.clientOid, clientOid) });
   if (duplicate) return;
@@ -848,4 +863,3 @@ export function startScheduler() {
   const initial = setTimeout(() => { void tick(); }, 10_000);
   initial.unref();
 }
-

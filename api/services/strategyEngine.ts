@@ -16,6 +16,7 @@ const FOLD_COUNT = 3;
 const WARMUP_SIZE = 220;
 const MIN_OOS_TRADES = 8;
 const MIN_PROFIT_FACTOR = 1.15;
+const MAX_LIVE_ENTRY_DRIFT_R = 0.25;
 
 type BacktestStats = {
   closedTrades: number;
@@ -109,28 +110,51 @@ export type ActionableSignal = {
   execution: EntryGateResult;
 };
 
-function optionsFor(candles: Candle[], market: Market, timeframe: Timeframe): BacktestOptions {
+export type ActionableSignalEvaluation = {
+  signal: ActionableSignal | null;
+  reason: string;
+  candleTime: number | null;
+};
+
+type EntryFilterRejection = { signal: Signal; gate: EntryGateResult };
+
+function optionsFor(
+  candles: Candle[],
+  market: Market,
+  timeframe: Timeframe,
+  onRejected?: (rejection: EntryFilterRejection) => void,
+): BacktestOptions {
   return {
     ...BACKTEST_ASSUMPTIONS,
-    entryFilter: (signal, strategyId) => evaluateEntryGate({
-      candles: candles.slice(0, signal.index + 1),
-      market,
-      timeframe,
-      strategyId,
-      side: signal.side,
-      entryPrice: signal.entry,
-      stopPrice: signal.sl,
-      targetPrice: signal.tp2,
-    }).allowed,
+    entryFilter: (signal, strategyId) => {
+      const gate = evaluateEntryGate({
+        candles: candles.slice(0, signal.index + 1),
+        market,
+        timeframe,
+        strategyId,
+        side: signal.side,
+        entryPrice: signal.entry,
+        stopPrice: signal.sl,
+        targetPrice: signal.tp2,
+      });
+      if (!gate.allowed) onRejected?.({ signal, gate });
+      return gate.allowed;
+    },
   };
 }
 
-function backtest(candles: Candle[], strategyId: string, market: Market, timeframe: Timeframe) {
+function backtest(
+  candles: Candle[],
+  strategyId: string,
+  market: Market,
+  timeframe: Timeframe,
+  onRejected?: (rejection: EntryFilterRejection) => void,
+) {
   return AIEngine.generateSignalsAndBacktest(
     candles,
     Indicators.computeAll(candles),
     strategyId,
-    optionsFor(candles, market, timeframe),
+    optionsFor(candles, market, timeframe, onRejected),
   );
 }
 
@@ -243,6 +267,115 @@ export function runWalkForward(
   };
 }
 
+export function evaluateLatestActionableSignal(input: {
+  candles: Candle[];
+  strategyId: string;
+  market: Market;
+  timeframe: Timeframe;
+  nowMs?: number;
+}): ActionableSignalEvaluation {
+  const { candles, strategyId, market, timeframe } = input;
+  const nowMs = input.nowMs ?? Date.now();
+  if (candles.length < 80) {
+    return {
+      signal: null,
+      reason: `Zu wenig Kerzen für eine Signalprüfung (${candles.length}/80).`,
+      candleTime: candles.at(-1)?.time ?? null,
+    };
+  }
+  const current = candles[candles.length - 1];
+  const previous = candles[candles.length - 2];
+  if (isClosedCandle(current, timeframe, nowMs / 1000)) {
+    return { signal: null, reason: "Die neueste KuCoin-Kerze ist bereits geschlossen; es gibt kein aktuelles Einstiegsfenster.", candleTime: current.time };
+  }
+  if (!isClosedCandle(previous, timeframe, nowMs / 1000)) {
+    return { signal: null, reason: "Die Signalkerze ist noch nicht geschlossen.", candleTime: current.time };
+  }
+  const ageSeconds = nowMs / 1000 - current.time;
+  if (ageSeconds < 0 || ageSeconds >= timeframeSeconds(timeframe)) {
+    return {
+      signal: null,
+      reason: "Das Einstiegsfenster dieser Kerze ist abgelaufen.",
+      candleTime: current.time,
+    };
+  }
+
+  const rejectedSignal: { current: EntryFilterRejection | null } = { current: null };
+  const result = backtest(candles, strategyId, market, timeframe, (candidate) => {
+    if (candidate.signal.entryIndex === candles.length - 1 && candidate.signal.time === previous.time) {
+      rejectedSignal.current = candidate;
+    }
+  });
+  const signal = result.signals.find(
+    (candidate) => candidate.entryIndex === candles.length - 1 && candidate.time === previous.time,
+  );
+  if (!signal) {
+    if (rejectedSignal.current) {
+      return {
+        signal: null,
+        reason: `Signal ${rejectedSignal.current.signal.side} durch Ausführungsfilter blockiert: ${rejectedSignal.current.gate.reasons.join("; ") || "nicht freigegeben"}.`,
+        candleTime: current.time,
+      };
+    }
+    return { signal: null, reason: `Kein neues ${strategyId}-Signal auf der zuletzt geschlossenen Kerze.`, candleTime: current.time };
+  }
+  if (market === "spot" && signal.side === "SELL") {
+    return { signal: null, reason: "Spot erlaubt keine Short-Entries.", candleTime: current.time };
+  }
+  const direction = signal.side === "BUY" ? 1 : -1;
+  const riskDistance = Math.abs(signal.entry - signal.sl);
+  const entryPrice = current.close;
+  if (!(riskDistance > 0) || !Number.isFinite(entryPrice) || !(entryPrice > 0)) {
+    return { signal: null, reason: "Kerzenpreis oder Stop-Abstand ist ungültig.", candleTime: current.time };
+  }
+  const stopTouched = signal.side === "BUY" ? current.low <= signal.sl : current.high >= signal.sl;
+  const targetTouched = signal.side === "BUY" ? current.high >= signal.tp2 : current.low <= signal.tp2;
+  if (stopTouched || targetTouched) {
+    return {
+      signal: null,
+      reason: stopTouched
+        ? "Stop-Level wurde bereits innerhalb der Einstiegskerze berührt; kein verspäteter Einstieg."
+        : "TP2 wurde bereits innerhalb der Einstiegskerze berührt; kein verspäteter Einstieg.",
+      candleTime: current.time,
+    };
+  }
+  const driftR = ((entryPrice - signal.entry) * direction) / riskDistance;
+  if (Math.abs(driftR) > MAX_LIVE_ENTRY_DRIFT_R) {
+    return {
+      signal: null,
+      reason: `Preis ist ${driftR > 0 ? "günstig" : "ungünstig"} um ${Math.abs(driftR).toFixed(2)}R gelaufen; erlaubt sind höchstens ${MAX_LIVE_ENTRY_DRIFT_R.toFixed(2)}R.`,
+      candleTime: current.time,
+    };
+  }
+  const execution = evaluateEntryGate({
+    candles: candles.slice(0, -1),
+    market,
+    timeframe,
+    strategyId,
+    side: signal.side,
+    entryPrice,
+    stopPrice: signal.sl,
+    targetPrice: signal.tp2,
+  });
+  if (!execution.allowed) {
+    return { signal: null, reason: `Ausführungsfilter blockiert das Signal: ${execution.reasons.join("; ")}.`, candleTime: current.time };
+  }
+  return {
+    signal: {
+      clientOidSeed: `${strategyId}-${signal.time}-${signal.side}`,
+      signalTime: signal.time,
+      side: signal.side === "BUY" ? "buy" : "sell",
+      entryPrice,
+      stopPrice: signal.sl,
+      targetPrice: signal.tp2,
+      reasons: signal.reasons,
+      execution,
+    },
+    reason: "Frisches Signal ist freigegeben.",
+    candleTime: current.time,
+  };
+}
+
 export function getLatestActionableSignal(input: {
   candles: Candle[];
   strategyId: string;
@@ -250,42 +383,7 @@ export function getLatestActionableSignal(input: {
   timeframe: Timeframe;
   nowMs?: number;
 }): ActionableSignal | null {
-  const { candles, strategyId, market, timeframe } = input;
-  const nowMs = input.nowMs ?? Date.now();
-  if (candles.length < 80) return null;
-  const current = candles[candles.length - 1];
-  const previous = candles[candles.length - 2];
-  if (isClosedCandle(current, timeframe, nowMs / 1000)) return null;
-  if (!isClosedCandle(previous, timeframe, nowMs / 1000)) return null;
-  const ageSeconds = nowMs / 1000 - current.time;
-  if (ageSeconds < 0 || ageSeconds > Math.min(90, timeframeSeconds(timeframe) * 0.2)) return null;
-
-  const result = backtest(candles, strategyId, market, timeframe);
-  const signal = result.signals.find(
-    (candidate) => candidate.entryIndex === candles.length - 1 && candidate.time === previous.time,
-  );
-  if (!signal || (market === "spot" && signal.side === "SELL")) return null;
-  const execution = evaluateEntryGate({
-    candles: candles.slice(0, -1),
-    market,
-    timeframe,
-    strategyId,
-    side: signal.side,
-    entryPrice: signal.entry,
-    stopPrice: signal.sl,
-    targetPrice: signal.tp2,
-  });
-  if (!execution.allowed) return null;
-  return {
-    clientOidSeed: `${strategyId}-${signal.time}-${signal.side}`,
-    signalTime: signal.time,
-    side: signal.side === "BUY" ? "buy" : "sell",
-    entryPrice: signal.entry,
-    stopPrice: signal.sl,
-    targetPrice: signal.tp2,
-    reasons: signal.reasons,
-    execution,
-  };
+  return evaluateLatestActionableSignal(input).signal;
 }
 
 export const walkForwardConstants = {

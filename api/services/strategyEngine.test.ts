@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getLatestActionableSignal, runWalkForward, walkForwardConstants } from "./strategyEngine";
+import { evaluateLatestActionableSignal, getLatestActionableSignal, runWalkForward, walkForwardConstants } from "./strategyEngine";
 import type { Candle } from "./kucoin";
 
 function candles(count: number, start = 1_760_000_000): Candle[] {
@@ -43,9 +43,10 @@ describe("live signal freshness", () => {
     expect(getLatestActionableSignal({ candles: series, strategyId: "ensemble", market: "spot", timeframe: "15m", nowMs })).toBeNull();
   });
 
-  it("never emits a stale signal after the entry window", () => {
+  it("continues evaluating within the same entry candle after the old 90-second cutoff", () => {
     const series = candles(500);
     const nowMs = (series[series.length - 1].time + 91) * 1000;
-    expect(getLatestActionableSignal({ candles: series, strategyId: "ensemble", market: "spot", timeframe: "15m", nowMs })).toBeNull();
+    const evaluation = evaluateLatestActionableSignal({ candles: series, strategyId: "ensemble", market: "spot", timeframe: "15m", nowMs });
+    expect(evaluation.reason).not.toBe("Das Einstiegsfenster dieser Kerze ist abgelaufen.");
   });
 });
