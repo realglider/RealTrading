@@ -4,8 +4,9 @@ import { getMarketRegime } from "./executionFilter";
 import type { Candle } from "./kucoin";
 
 export const MIN_AVERAGE_DOLLAR_VOLUME = 250_000;
-export const VALIDATED_COIN_COUNT = 2;
 export const TOP_COIN_COUNT = 50;
+// Walk-forward test every liquid candidate from the ranked top-50 universe.
+export const VALIDATED_COIN_COUNT = TOP_COIN_COUNT;
 
 export type VolumeCoinInput = {
   symbol: string;

@@ -115,6 +115,15 @@ export function MarketPanel({ settings, validation, validations, recommendation,
     : [...coinOptions, { symbol: form.symbol, label: `Aktuell: ${form.symbol}` }];
   const displaySymbol = recommendation?.symbol && recommendation.symbol !== "—" ? recommendation.symbol : settings.symbol;
   const displayValidations = validations.filter((entry) => entry.symbol === displaySymbol);
+  const coinValidationSummaries = coinRankings.map((coin) => {
+    const results = validations.filter((entry) => entry.symbol === coin.symbol);
+    const eligible = results.filter((entry) => entry.eligible).sort((a, b) => {
+      const expectancyA = a.closedTrades ? a.netR / a.closedTrades : Number.NEGATIVE_INFINITY;
+      const expectancyB = b.closedTrades ? b.netR / b.closedTrades : Number.NEGATIVE_INFINITY;
+      return expectancyB - expectancyA;
+    });
+    return { coin, results, best: eligible[0] };
+  });
 
   return (
     <section className="min-w-0 border border-border bg-card" aria-label={`${marketName}-Bot`}>
@@ -197,7 +206,7 @@ export function MarketPanel({ settings, validation, validations, recommendation,
         </div>}
         <div className="col-span-2 flex flex-wrap items-end gap-2 md:col-span-6">
           <Button type="submit" size="sm" disabled={save.isPending}>Konfiguration speichern</Button>
-          <Button type="button" size="sm" variant="outline" disabled={validate.isPending} onClick={() => validate.mutate({ market: settings.market })}>{validate.isPending ? <RefreshCw className="animate-spin" /> : <Activity />}{validate.isPending ? "Top 50 & Walk-Forward laufen …" : "Walk-Forward starten"}</Button>
+          <Button type="button" size="sm" variant="outline" disabled={validate.isPending} onClick={() => validate.mutate({ market: settings.market })}>{validate.isPending ? <RefreshCw className="animate-spin" /> : <Activity />}{validate.isPending ? "Alle liquiden Top-50 laufen …" : "Alle Top-50 validieren"}</Button>
           <Button type="button" size="sm" variant="ghost" disabled={runNow.isPending} onClick={() => runNow.mutate({ market: settings.market })}><Play />Bot-Lauf</Button>
         </div>
       </form>
@@ -255,7 +264,20 @@ export function MarketPanel({ settings, validation, validations, recommendation,
               </tr>)}</tbody>
             </table>
           </div>
-          <p className="mt-2 text-[11px] leading-5 text-muted-foreground">Nur die beiden bestplatzierten liquiden Coins gehen in den folgenden Walk-Forward-Vergleich. Das Ranking allein ist keine Handelsfreigabe.</p>
+          <p className="mt-2 text-[11px] leading-5 text-muted-foreground">Alle liquiden Coins dieses Top-50-Rankings gehen in den Walk-Forward-Vergleich. Coins ohne ausreichende Historie oder Liquidität werden sichtbar ausgeschlossen. Das Ranking allein ist keine Handelsfreigabe.</p>
+          <div className="mt-4 max-h-96 max-w-full overflow-auto border border-border">
+            <table className="w-full min-w-[760px] border-collapse text-left text-xs">
+              <thead><tr className="sticky top-0 border-b border-border bg-background text-[10px] uppercase tracking-wider text-muted-foreground"><th className="px-3 py-2 font-medium">Coin</th><th className="px-3 py-2 font-medium">Geprüfte Timeframes</th><th className="px-3 py-2 font-medium">Beste OOS-Strategie</th><th className="px-3 py-2 font-medium">OOS-Trades</th><th className="px-3 py-2 font-medium">Netto-R</th><th className="px-3 py-2 font-medium">Status</th></tr></thead>
+              <tbody>{coinValidationSummaries.map(({ coin, results, best }) => <tr key={coin.symbol} className="border-b border-border last:border-b-0">
+                <td className="px-3 py-2.5 font-medium">#{coin.rank} · {coin.symbol}</td>
+                <td className="px-3 py-2.5">{results.length} / {TIMEFRAMES.length}</td>
+                <td className="px-3 py-2.5">{best ? `${best.strategyName} · ${best.timeframe}` : "—"}</td>
+                <td className="px-3 py-2.5">{best?.closedTrades ?? "—"}</td>
+                <td className={`px-3 py-2.5 ${best ? (best.netR >= 0 ? "text-mint" : "text-red-300") : ""}`}>{best ? number(best.netR) : "—"}</td>
+                <td className={`px-3 py-2.5 ${best ? "text-mint" : coin.liquid ? "text-amber-200" : "text-muted-foreground"}`}>{best ? "Freigegeben" : !coin.liquid ? "Liquiditäts-/Historienfilter" : results.length ? "Nicht freigegeben" : "Noch nicht geprüft"}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
         </>}
         <div className="mt-4 flex items-center justify-between gap-3">
           <span className="terminal-label">Walk-Forward · {displaySymbol}</span>

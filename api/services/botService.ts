@@ -35,6 +35,8 @@ import { evaluateLatestActionableSignal, runWalkForward } from "./strategyEngine
 
 const VALIDATION_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const runningMarkets = new Set<string>();
+const validationJobs = new Map<string, Promise<RecommendationDto>>();
+const throttledEvents = new Map<string, number>();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const iso = (date: Date | null) => date?.toISOString() ?? null;
 
@@ -44,6 +46,21 @@ function keyFor(userId: number, market: Market) {
 
 async function recordEvent(userId: number, market: Market, level: "info" | "warn" | "error" | "success", message: string) {
   await getDb().insert(botEvents).values({ userId, market, level, message: message.slice(0, 4000) });
+}
+
+async function recordThrottledEvent(
+  userId: number,
+  market: Market,
+  key: string,
+  intervalMs: number,
+  level: "info" | "warn" | "error" | "success",
+  message: string,
+) {
+  const throttleKey = `${userId}:${market}:${key}`;
+  const now = Date.now();
+  if (now - (throttledEvents.get(throttleKey) ?? 0) < intervalMs) return;
+  throttledEvents.set(throttleKey, now);
+  await recordEvent(userId, market, level, message);
 }
 
 export async function ensureSettings(userId: number) {
@@ -150,7 +167,8 @@ export async function getOverview(userId: number): Promise<BotOverviewDto> {
   const [settings, credentials, validations, rankingRows, positionRows, orderRows, eventRows] = await Promise.all([
     ensureSettings(userId),
     db.select().from(apiCredentials).where(eq(apiCredentials.userId, userId)),
-    db.select().from(validationRuns).where(eq(validationRuns.userId, userId)).orderBy(desc(validationRuns.createdAt)).limit(150),
+    // Up to 50 candidates × 5 timeframes, plus a prior scan for comparison.
+    db.select().from(validationRuns).where(eq(validationRuns.userId, userId)).orderBy(desc(validationRuns.createdAt)).limit(600),
     db.select().from(coinRankings).where(eq(coinRankings.userId, userId)).orderBy(desc(coinRankings.createdAt)).limit(120),
     db.select().from(positions).where(eq(positions.userId, userId)).orderBy(desc(positions.openedAt)).limit(50),
     db.select().from(orders).where(eq(orders.userId, userId)).orderBy(desc(orders.createdAt)).limit(50),
@@ -389,7 +407,7 @@ async function runCoinResearch(userId: number, market: Market, configuredSymbol:
   return { rankings, failedSymbols };
 }
 
-export async function runValidation(userId: number, market: Market): Promise<RecommendationDto> {
+async function runValidationOnce(userId: number, market: Market): Promise<RecommendationDto> {
   const settings = (await ensureSettings(userId)).find((row) => row.market === market);
   if (!settings) throw new Error("Bot-Konfiguration fehlt");
   const research = await runCoinResearch(userId, market, settings.symbol);
@@ -430,6 +448,17 @@ export async function runValidation(userId: number, market: Market): Promise<Rec
     `Coin-/Strategieempfehlung ${recommendation.symbol}: ${recommendation.eligible ? `${recommendation.strategyName} auf ${recommendation.timeframe}` : "keine Handelsfreigabe"}.${failureNote}`,
   );
   return recommendation;
+}
+
+export function runValidation(userId: number, market: Market): Promise<RecommendationDto> {
+  const key = keyFor(userId, market);
+  const existing = validationJobs.get(key);
+  if (existing) return existing;
+  const job = runValidationOnce(userId, market).finally(() => {
+    if (validationJobs.get(key) === job) validationJobs.delete(key);
+  });
+  validationJobs.set(key, job);
+  return job;
 }
 
 export async function setLiveEnabled(userId: number, market: Market, enabled: boolean) {
@@ -758,10 +787,16 @@ export async function runMarketForUser(userId: number, market: Market) {
     const credentials = await readCredentials(userId, market);
     if (!credentials) {
       if (settings.liveEnabled) {
-        await getDb().update(botSettings).set({ liveEnabled: false }).where(eq(botSettings.id, settings.id));
-        await recordEvent(userId, market, "error", "Live-Modus deaktiviert: Zugangsdaten fehlen.");
+        await recordThrottledEvent(
+          userId,
+          market,
+          "missing-credentials",
+          60 * 60 * 1000,
+          "error",
+          "Zugangsdaten fehlen; keine neuen Entries möglich. Live bleibt armiert und prüft weiter, bis Zugangsdaten verfügbar sind.",
+        );
       }
-      return "Keine Zugangsdaten";
+      return "Keine Zugangsdaten; Live bleibt armiert, Entries pausieren";
     }
     await reconcilePositions(userId, market, credentials);
     const exited = await monitorOpenPositions(userId, market, settings.timeframe as Timeframe, credentials);
@@ -769,9 +804,15 @@ export async function runMarketForUser(userId: number, market: Market) {
     if (exited) return "Exit verarbeitet";
     if (!settings.liveEnabled) return "Überwachung aktiv; neue Entries deaktiviert";
     if (await dailyLossExceeded(userId, market, Number(settings.maxDailyLossUsd))) {
-      await getDb().update(botSettings).set({ liveEnabled: false }).where(eq(botSettings.id, settings.id));
-      await recordEvent(userId, market, "error", "Intern geschätztes Tagesverlustlimit erreicht; Live-Modus deaktiviert.");
-      return "Tagesverlustlimit erreicht";
+      await recordThrottledEvent(
+        userId,
+        market,
+        "daily-loss-pause",
+        24 * 60 * 60 * 1000,
+        "warn",
+        "Tagesverlustlimit erreicht; neue Entries bleiben bis zum nächsten UTC-Tag gesperrt. Live bleibt armiert, offene Positionen werden weiter überwacht.",
+      );
+      return "Tagesverlustlimit erreicht; Entries bis zum nächsten UTC-Tag pausiert, Live bleibt armiert";
     }
     const active = await getDb().query.positions.findFirst({ where: and(
       eq(positions.userId, userId),
@@ -782,6 +823,18 @@ export async function runMarketForUser(userId: number, market: Market) {
 
     let validation = await latestValidation(userId, market, settings.symbol, settings.timeframe as Timeframe);
     if (!validation || Date.now() - validation.createdAt.getTime() > VALIDATION_MAX_AGE_MS) {
+      const lastMarketScanAt = settings.lastValidationAt?.getTime() ?? 0;
+      if (lastMarketScanAt > 0 && Date.now() - lastMarketScanAt <= VALIDATION_MAX_AGE_MS) {
+        await recordThrottledEvent(
+          userId,
+          market,
+          "market-scan-wait",
+          VALIDATION_MAX_AGE_MS,
+          "info",
+          `Einstieg pausiert: Die letzte vollständige Marktprüfung ist noch aktuell; nächste Prüfung frühestens nach ${Math.ceil((VALIDATION_MAX_AGE_MS - (Date.now() - lastMarketScanAt)) / 60_000)} Minuten. Live bleibt armiert.`,
+        );
+        return "Marktprüfung noch aktuell; Live bleibt armiert, Entries warten auf passende Freigabe";
+      }
       const recommendation = await runValidation(userId, market);
       if (recommendation.symbol !== settings.symbol || recommendation.timeframe !== settings.timeframe) {
         await recordEvent(userId, market, "warn", `Entry pausiert: Neue Empfehlung ${recommendation.symbol} / ${recommendation.timeframe ?? "keine"} weicht von der Konfiguration ${settings.symbol} / ${settings.timeframe} ab. Live-Freigabe bleibt aktiv; keine automatische Umstellung.`);
@@ -793,9 +846,15 @@ export async function runMarketForUser(userId: number, market: Market) {
       }
     }
     if (!validation.eligible) {
-      await getDb().update(botSettings).set({ liveEnabled: false }).where(eq(botSettings.id, settings.id));
-      await recordEvent(userId, market, "warn", "Live-Modus deaktiviert: aktuelle Walk-Forward-Strategie ist nicht freigegeben.");
-      return "Keine freigegebene Strategie";
+      await recordThrottledEvent(
+        userId,
+        market,
+        `ineligible:${settings.symbol}:${settings.timeframe}`,
+        VALIDATION_MAX_AGE_MS,
+        "warn",
+        `Keine freigegebene OOS-Strategie für ${settings.symbol}/${settings.timeframe}; neue Entries pausieren bis zur nächsten Prüfung. Live bleibt armiert.`,
+      );
+      return "Keine freigegebene Strategie; Entries pausiert, Live bleibt armiert";
     }
     await enterPosition(userId, settings, validation, credentials);
     return "Lauf abgeschlossen";
